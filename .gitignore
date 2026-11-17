@@ -1,0 +1,14 @@
+.codebuddy/
+.runtime/
+.env
+__pycache__/
+.venv/
+node_modules/
+dist/
+data/
+backups/
+*.agekey
+*.age
+*.pem
+*.p12
+*.key

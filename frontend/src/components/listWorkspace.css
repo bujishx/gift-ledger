@@ -1,0 +1,77 @@
+.list-workspace { --workspace-control-height:160px; position:relative; margin-top:16px; }
+.workspace-controls { position:sticky; top:0; z-index:35; display:flex; flex-direction:column; gap:10px; padding:12px 0; background:var(--ui-background,#f6f8fc); border-bottom:1px solid var(--ui-border); }
+.workspace-top { display:grid; grid-template-columns:auto minmax(180px,1fr) auto; grid-template-areas:'title search add'; gap:16px; align-items:center; width:100%; }
+.workspace-bottom { display:flex; justify-content:space-between; align-items:center; gap:12px; width:100%; }
+.workspace-title { grid-area:title; margin:0; white-space:nowrap; font-size:18px; }
+.workspace-search { grid-area:search; min-width:0; }
+.workspace-add { grid-area:add; justify-self:end; }
+.workspace-search > .toolbar { padding:0; margin:0; border:0; border-radius:0; background:transparent; box-shadow:none; }
+.workspace-search .toolbar-main { gap:8px; }
+.workspace-search .search-wrap { min-width:0; }
+.workspace-search .search-help { font-size:11px; margin-top:5px; line-height:1.45; }
+.workspace-meta { grid-area:meta; display:flex; align-items:center; gap:12px; min-width:0; color:var(--ui-muted); font-size:12px; }
+.workspace-meta .mobile-sort { display:flex; order:initial; width:auto; gap:8px; }
+.workspace-meta .sort-control select { max-width:150px; }
+.workspace-count { white-space:nowrap; }
+.list-workspace .workspace-pagination { grid-area:pager; justify-self:end; flex-wrap:nowrap; gap:8px; min-width:0; font-size:12px; }
+.list-workspace .workspace-pagination .workspace-page-count { white-space:nowrap; background:#edf2f9; padding:5px 8px; border-radius:12px; color:var(--ui-muted); }
+.list-workspace .workspace-pagination strong { width:30px; height:30px; }
+.list-workspace .workspace-pagination button { padding:5px 3px; white-space:nowrap; }
+.list-workspace .workspace-pagination select { padding:5px 8px; }
+.workspace-list .list-section { margin-top:10px; }
+.workspace-list { overflow-anchor:none; }
+.workspace-list .data-table tbody tr, .workspace-list .mobile-card { scroll-margin-top:calc(var(--workspace-control-height) + 64px); scroll-margin-bottom:36px; }
+.workspace-table-head { position:absolute; top:100%; left:0; right:0; display:none; overflow:hidden; border:1px solid var(--ui-border); background:#f1f5fb; box-shadow:0 4px 8px #162d4912; }
+.workspace-table-head.visible { display:block; }
+.workspace-table-head .data-table { margin:0; border-radius:0; }
+.workspace-table-head .data-table th { background:#f1f5fb; }
+.workspace-table-head .sort-head { width:100%; }
+.workspace-horizontal-rail { position:fixed; bottom:0; height:22px; overflow-x:auto; overflow-y:hidden; z-index:36; background:#eef3fa; border:1px solid #d5dfec; overscroll-behavior-x:contain; box-shadow:0 -3px 10px #162d4912; }
+.workspace-horizontal-rail > div { height:1px; }
+.workspace-horizontal-rail::-webkit-scrollbar { height:14px; }
+.workspace-horizontal-rail::-webkit-scrollbar-thumb { background:#8b98ab; border:3px solid #eef3fa; border-radius:12px; }
+.business-title { display:flex; align-items:center; gap:16px; }
+.business-title h1 { margin:0; }
+.business-title .guide-entry { padding:4px 0; font-size:13px; }
+.ledger-card-tail { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px; }
+.ledger-card-tail small { overflow-wrap:anywhere; white-space:normal; line-height:1.5; min-width:0; }
+.ledger-card-tail small:last-child { text-align:right; }
+.business-guide .accounting-guide { padding:0; margin:0; border:0; box-shadow:none; }
+@media (min-width:701px) and (max-width:1100px) {
+  .workspace-controls { gap:9px; }
+  .workspace-top { grid-template-columns:minmax(0,1fr) auto; grid-template-areas:'title add' 'search search'; gap:9px 12px; }
+  .workspace-bottom { gap:8px; }
+  .workspace-meta { flex-wrap:wrap; gap:4px 8px; }
+  .workspace-meta .mobile-sort { gap:4px; font-size:11px; }
+  .workspace-meta .sort-control select { max-width:100px; padding:5px 6px; }
+  .list-workspace .workspace-pagination { gap:5px; font-size:11px; }
+  .list-workspace .workspace-pagination .page-number, .list-workspace .workspace-pagination .page-gap, .list-workspace .workspace-pagination strong { display:none; }
+  .list-workspace .workspace-pagination .page-size { font-size:0; }
+  .list-workspace .workspace-pagination .page-size select { font-size:11px; }
+  .list-workspace .workspace-pagination button { padding:5px 1px; }
+}
+@media (max-width:700px) {
+  .list-workspace { margin-top:12px; }
+  .workspace-controls { gap:7px; padding:8px 0; }
+  .workspace-top { grid-template-columns:minmax(0,1fr) auto; grid-template-areas:'title add' 'search search'; gap:7px 8px; }
+  .workspace-bottom { flex-direction:column; align-items:stretch; gap:7px; }
+  .workspace-title { font-size:17px; }
+  .workspace-add .primary { padding:9px 13px; font-size:13px; }
+  .workspace-search .toolbar-main { gap:6px; }
+  .workspace-search .toolbar-main .outline, .workspace-search .toolbar-main .text-button { padding:8px; font-size:12px; }
+  .workspace-search .search-wrap input { padding:10px 0; }
+  .workspace-search .search-help { font-size:10px; margin-top:4px; }
+  .workspace-meta { justify-content:space-between; font-size:11px; gap:4px; }
+  .workspace-meta .mobile-sort { font-size:11px; gap:5px; }
+  .workspace-meta .sort-control select { max-width:110px; padding:4px 6px; }
+  .workspace-meta .sort-control button { padding:4px 2px; font-size:11px; }
+  .list-workspace .workspace-pagination { width:100%; justify-self:stretch; justify-content:space-between; gap:5px; }
+  .list-workspace .workspace-pagination .page-size { font-size:0; }
+  .list-workspace .workspace-pagination .page-size select { font-size:12px; }
+  .list-workspace .workspace-pagination .page-number, .list-workspace .workspace-pagination .page-gap, .list-workspace .workspace-pagination strong { display:none; }
+  .list-workspace .workspace-pagination .workspace-page-count { flex:1; text-align:center; }
+  .list-workspace .workspace-pagination button { min-height:34px; padding:5px 8px; background:#edf3ff; border:1px solid #d5e2f5; border-radius:9px; font-size:12px; }
+  .workspace-table-head, .workspace-horizontal-rail { display:none !important; }
+  .business-title { gap:12px; }
+  .business-title .guide-entry { font-size:12px; }
+}

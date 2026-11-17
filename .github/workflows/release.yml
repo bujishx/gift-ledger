@@ -1,0 +1,97 @@
+name: Publish approved candidate
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Candidate push run ID on the default branch
+        required: true
+        type: string
+      commit:
+        description: Full 40-character tested commit SHA
+        required: true
+        type: string
+      version:
+        description: Docker Hub and GitHub release tag, e.g. v1.5.0
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  publish:
+    if: github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch && github.actor == vars.RELEASE_OWNER && github.triggering_actor == vars.RELEASE_OWNER
+    runs-on: ubuntu-24.04
+    environment: dockerhub
+    concurrency: giftledger-publication
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: write
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CI_RUN: ${{ inputs.run_id }}
+      TESTED_SHA: ${{ inputs.commit }}
+      VERSION: ${{ inputs.version }}
+      HUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+    defaults:
+      run:
+        working-directory: release-control
+    steps:
+      - name: Check the prior run and version
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$CI_RUN" =~ ^[0-9]+$ && "$TESTED_SHA" =~ ^[a-f0-9]{40}$ && "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          default_branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+          test "$GITHUB_REF" = "refs/heads/$default_branch"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN" > "$RUNNER_TEMP/run.json"
+          jq -e --arg sha "$TESTED_SHA" --arg repo "$GITHUB_REPOSITORY" --arg branch "$default_branch" '.event=="push" and .status=="completed" and .conclusion=="success" and .path==".github/workflows/candidate.yml" and .head_branch==$branch and .head_sha==$sha and .head_repository.full_name==$repo' "$RUNNER_TEMP/run.json"
+          tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$VERSION" --jq ".[] | select(.ref == \"refs/tags/$VERSION\") | .object.sha")
+          if [[ -n "$tag_sha" ]]; then
+            test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$VERSION" --jq .sha)" = "$TESTED_SHA"
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: control-checkout
+          persist-credentials: false
+      - name: Read the selected version's public guide and Compose template
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.commit }}
+          path: tested-checkout
+          persist-credentials: false
+      - name: Isolate release control and the selected commit's reviewed source
+        working-directory: .
+        run: |
+          python3 -I control-checkout/deploy/publication/images.py stage-source control-checkout release-control
+          python3 -I release-control/deploy/publication/images.py stage-source tested-checkout selected-source
+      - name: Download the passing run's immutable artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$CI_RUN" --repo "$GITHUB_REPOSITORY" --name giftledger-candidate --dir "$RUNNER_TEMP/candidate"
+      - name: Verify the candidate before logging in
+        env:
+          GIFTLEDGER_PUBLIC_SOURCE: ${{ github.workspace }}/selected-source
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo age
+          python3 deploy/publication/images.py verify "$RUNNER_TEMP/candidate" --commit "$TESTED_SHA"
+      - name: Copy the already tested OCI manifests to Docker Hub
+        env:
+          HUB_LOGIN: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/giftledger-registry.json
+        run: |
+          set -euo pipefail
+          trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
+          printf '%s' "$HUB_TOKEN" | skopeo login --authfile "$REGISTRY_AUTH_FILE" --username "$HUB_LOGIN" --password-stdin docker.io
+          unset HUB_TOKEN
+          export GIFTLEDGER_PUBLIC_SOURCE="$GITHUB_WORKSPACE/selected-source"
+          python3 deploy/publication/images.py publish "$RUNNER_TEMP/candidate" --commit "$TESTED_SHA" --namespace "$HUB_NAMESPACE" --version "$VERSION" --assets "$RUNNER_TEMP/release"
+      - name: Install and back up using the public digest-pinned YAML
+        run: sudo env GIFTLEDGER_PUBLIC_SOURCE="$GITHUB_WORKSPACE/selected-source" python3 deploy/publication/smoke.py --published "$RUNNER_TEMP/release/docker-compose.yml"
+      - name: Publish installation files for site owners
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 deploy/publication/github_release.py "$RUNNER_TEMP/release" "$VERSION" "$TESTED_SHA"

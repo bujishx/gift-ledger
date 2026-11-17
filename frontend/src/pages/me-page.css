@@ -1,0 +1,318 @@
+/* “我的”页面专用样式（U11）。
+   规则全部限定在 .me-page / .me-* 之下，只服务本页，绝不重写全站选择器，
+   颜色与圆角统一取 --ui-* 变量。 */
+
+/* 四个子页入口：手机两行两列由 ui.css 的 .subpage-tabs 提供，这里只调间距与可读性。 */
+.me-page .me-tabs {
+  margin-bottom: 18px;
+}
+.me-page .me-tabs button {
+  padding: 9px 12px;
+}
+.me-page .me-tabs button.selected {
+  font-weight: 700;
+}
+.me-page .me-dict-tabs {
+  margin-bottom: 12px;
+}
+
+/* 表单补充说明与必填标记 */
+.me-page .me-field-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.me-page .me-required {
+  color: var(--ui-expense);
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: 4px;
+}
+.me-page .me-actions {
+  margin-top: 0;
+}
+
+/* 我的数据：下载入口 + 说明 */
+.me-page .me-resource-list {
+  display: grid;
+  gap: 12px;
+}
+.me-page .me-resource {
+  display: grid;
+  gap: 4px;
+}
+.me-page .me-resource .link-button {
+  margin: 0;
+}
+.me-page .me-resource small {
+  color: var(--ui-muted);
+}
+
+/* 导入／恢复阶段条 */
+.me-page .me-steps {
+  list-style: none;
+  padding: 0;
+  margin: 2px 0 14px;
+  counter-reset: me-step;
+}
+.me-page .me-steps li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.me-page .me-steps li::before {
+  counter-increment: me-step;
+  content: counter(me-step);
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #eef2f8;
+  color: var(--ui-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.me-page .me-steps li.done::before {
+  background: #e2f3e9;
+  color: #207c49;
+}
+.me-page .me-steps li.current::before {
+  background: var(--ui-primary);
+  color: #fff;
+}
+.me-page .me-steps li.current span {
+  color: var(--ui-primary);
+  font-weight: 700;
+}
+.me-page .me-steps li.todo span {
+  color: var(--ui-muted);
+}
+.me-page .me-step-busy {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+/* 处理中提示 */
+.me-page .me-status {
+  margin: 0;
+  padding: 9px 11px;
+  background: var(--ui-primary-soft);
+  border: 1px solid #cfe0ff;
+  border-radius: 10px;
+  color: #17457f;
+  font-size: 13px;
+}
+
+/* 预检结果 */
+.me-page .me-summary {
+  font-variant-numeric: tabular-nums;
+}
+.me-page .issue-list ol {
+  margin: 0;
+  padding-left: 18px;
+}
+/* 共用样式给的 250px 高度会截断常见错误条数，这里放宽到可视高度内，
+   更长的清单仍然在容器内滚动，不把页面撑长。 */
+.me-page .issue-list {
+  max-height: min(48dvh, 420px);
+}
+.me-page .me-truncated {
+  display: block;
+  color: var(--ui-expense);
+}
+.me-page .issue-list li {
+  padding: 6px 0;
+  border-bottom: 1px solid #f1d9d3;
+  overflow-wrap: anywhere;
+}
+.me-page .issue-list li:last-child {
+  border-bottom: 0;
+}
+.me-page .issue-list li b {
+  display: block;
+  font-size: 12px;
+}
+.me-page .me-issue-title {
+  margin: 0 0 6px;
+  font-weight: 700;
+}
+/* 六项核对数量：电脑／平板 3 列两行，手机 2 列，避免挤成一行看不全。 */
+.me-page .preview-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.me-page .preview-counts span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 预览明细列表（新增联系人／新增字典项） */
+.me-page .me-detail-list {
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: var(--ui-surface);
+  padding: 8px 11px;
+}
+.me-page .me-detail-list h4 {
+  margin: 2px 0 6px;
+  font-size: 13px;
+  color: var(--ui-muted);
+}
+.me-page .me-detail-list p {
+  margin: 0;
+  padding: 6px 0;
+  border-bottom: 1px solid #eef2f8;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.me-page .me-detail-list p:last-child {
+  border-bottom: 0;
+}
+.me-page .me-detail-list small {
+  color: var(--ui-muted);
+}
+
+/* 替换范围 */
+.me-page .me-replace-notice {
+  margin: 0;
+}
+.me-page .restore-table > div {
+  font-size: 13px;
+}
+.me-page .restore-table strong:not(:first-child),
+.me-page .restore-table span:not(:first-child) {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.me-page .rename-list h3 {
+  margin-bottom: 6px;
+}
+
+/* 字典管理 */
+.me-page .dictionary-add {
+  flex-wrap: wrap;
+}
+.me-page .dictionary-add button {
+  flex: none;
+}
+.me-page .me-dict-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.me-page .me-dict-main strong {
+  overflow-wrap: anywhere;
+}
+.me-page .me-dict-main small {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--ui-muted);
+}
+.me-page .me-dict-main .status-pill {
+  margin-left: 0;
+}
+.me-page .me-dict-lock {
+  color: var(--ui-muted);
+  white-space: nowrap;
+}
+
+/* 退出登录 */
+.me-page .me-logout {
+  margin-top: 20px;
+  justify-content: flex-start;
+}
+
+@media (max-width: 700px) {
+  .me-page .me-tabs button {
+    padding: 9px 8px;
+  }
+  .me-page .me-steps {
+    gap: 8px 12px;
+  }
+  .me-page .me-dict-lock {
+    display: none;
+  }
+  .me-page .preview-counts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 420px) {
+  .me-page .me-tabs button {
+    padding: 8px 4px;
+    font-size: 13px;
+  }
+  .me-page .restore-table > div {
+    grid-template-columns: 1.4fr 1fr 1fr;
+    padding: 7px 8px;
+    font-size: 12px;
+  }
+  .me-page .dictionary-row {
+    padding: 10px;
+  }
+  /* 窄屏也保持“名称在左、⋯ 菜单在右”的一行结构，菜单已收纳修改／启停／删除。 */
+  .me-page .dictionary-row {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+  }
+  .me-page .dictionary-actions {
+    width: auto;
+    flex: none;
+    justify-content: flex-end;
+  }
+}
+
+.me-page .me-selected-file { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:6px 10px; margin:12px 0; padding:12px; background:#f2f7ff; border:1px solid #d6e4fa; border-radius:12px; }
+.me-page .me-selected-file p { min-width:0; margin:0; color:#274566; overflow-wrap:anywhere; }
+.me-page .me-selected-file strong { font-weight:700; }
+.me-page .me-selected-file small { grid-column:1 / -1; color:#64748b; line-height:1.6; }
+.me-page .me-selected-file button { min-height:40px; padding:6px 3px; white-space:nowrap; }
+
+.me-page .me-about-version { margin-top:24px; border-top:1px solid #dce5ef; padding-top:14px; display:flex; align-items:center; justify-content:space-between; gap:12px; color:#66758a; font-size:13px; }
+.me-page .version-link { min-height:44px; display:flex; align-items:center; gap:9px; border:0; background:transparent; color:#496885; padding:8px 2px 8px 12px; font-size:13px; border-radius:6px; }
+.me-page .version-link span { font-size:22px; color:#75869c; }
+.me-page .version-link:focus-visible { outline:2px solid #0b57d0; outline-offset:3px; }
+
+.me-page .import-review-heading { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; }
+.me-page .import-review-heading h3 { margin:0; }
+.me-page .import-review-heading .link-button { margin:0; }
+.me-page .legacy-import-review { display:grid; gap:14px; min-width:0; }
+.me-page .import-issue-group { border:1px solid var(--ui-border); border-radius:12px; background:#f6f9fe; padding:12px; }
+.me-page .import-issue-group.error { border-color:#e6b5af; background:#fff7f6; }
+.me-page .import-issue-group.confirmation { border-color:#e1c48b; background:#fffbf3; }
+.me-page .import-issue-group h4 { margin:0 0 8px; }
+.me-page .import-issue-group ol { padding-left:20px; margin:0; max-height:min(55dvh,480px); overflow:auto; }
+.me-page .import-issue-group li { padding:9px 0; overflow-wrap:anywhere; }
+.me-page .import-issue-group li > b,
+.me-page .import-issue-group li > span,
+.me-page .import-issue-group li > small { display:block; line-height:1.7; }
+.me-page .import-issue-group li small { color:var(--ui-muted); }
+.me-page .import-issue-group .field { margin-top:9px; }
+.me-page .import-issue-group select { min-height:44px; max-width:100%; }
+.me-page .import-plan-summary h4 { margin:0 0 10px; }
+.me-page .import-date-counts { display:flex; gap:8px 14px; flex-wrap:wrap; margin-top:10px; color:var(--ui-muted); font-size:12px; }
+.me-page .import-row-plans { min-width:0; border:1px solid var(--ui-border); border-radius:12px; padding:12px; }
+.me-page .import-row-plans summary { cursor:pointer; font-weight:700; min-height:32px; }
+.me-page .import-plan-scroll { overflow:auto; max-height:min(65dvh,640px); }
+.me-page .import-plan-scroll table { min-width:740px; }
+.me-page .import-plan-scroll th { position:sticky; top:0; z-index:1; background:#edf4ff; }
+.me-page .import-plan-scroll td { vertical-align:top; white-space:normal; }
+.me-page .import-plan-scroll small { display:block; color:var(--ui-muted); line-height:1.65; overflow-wrap:anywhere; }
+.me-page .import-recovery { padding:14px; border:1px solid #e1c48b; background:#fffbf3; border-radius:12px; }
+.me-page .import-completed { padding:14px; border:1px solid #b7d8c4; background:#f5fcf7; border-radius:12px; overflow-wrap:anywhere; }
+.me-page .import-batch-history { display:grid; gap:10px; margin-top:18px; padding-top:18px; border-top:1px solid var(--ui-border); }
+.me-page .import-batch-list { padding:0; margin:0; list-style:none; }
+.me-page .import-batch-list li { display:grid; gap:5px; padding:10px 0; border-bottom:1px solid var(--ui-border); overflow-wrap:anywhere; }
+.me-page .import-batch-list small { color:var(--ui-muted); }

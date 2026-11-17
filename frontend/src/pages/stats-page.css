@@ -1,0 +1,392 @@
+/**
+ * 统计四子页专用样式（U10）。
+ * 只作用于 .stats-page 内部；不改动 style.css / ui.css 的全站选择器。
+ * 颜色、圆角一律取 --ui-* 变量；红支绿收沿用 .expense / .income。
+ */
+
+/* ---------- 页头与子页入口 ---------- */
+/* .subpage-tabs 的列数在 ui.css 里定义（电脑/平板一行，手机两行两列），此处不覆盖列数。 */
+.stats-page .tab-strip {
+  margin-bottom: 18px;
+}
+
+/* ---------- 年份控件 ---------- */
+.stats-page .stats-year {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 24px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+.stats-page .stats-year__field {
+  flex: 0 0 auto;
+  width: 160px;
+  max-width: 100%;
+}
+.stats-page .stats-year__meta {
+  flex: 1 1 260px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.stats-page .stats-year__note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ui-muted);
+}
+.stats-page .stats-year__chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ui-muted);
+}
+.stats-page .stats-chip {
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  border-radius: 14px;
+  padding: 4px 11px;
+  min-height: 30px;
+  font-size: 12px;
+  line-height: 1;
+}
+.stats-page .stats-chip.selected {
+  background: var(--ui-primary-soft);
+  border-color: #cfe0ff;
+  color: var(--ui-primary);
+  font-weight: 700;
+}
+
+/* ---------- 主体卡片 ---------- */
+.stats-page .stats-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.stats-page .stats-scope {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ui-muted);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- 时间段：合计 ---------- */
+.stats-page .stats-totals {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.stats-page .stats-total {
+  min-width: 0;
+  background: #f5f8fc;
+  border-radius: 12px;
+  padding: 13px;
+}
+.stats-page .stats-total small {
+  display: block;
+  font-size: 12px;
+  color: var(--ui-muted);
+}
+.stats-page .stats-total strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 21px;
+  overflow-wrap: anywhere;
+}
+.stats-page .stats-total__note {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+/* ---------- 时间段：图例 ---------- */
+.stats-page .stats-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  font-size: 12px;
+  color: var(--ui-muted);
+}
+.stats-page .stats-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.stats-page .stats-legend__swatch {
+  flex: none;
+  width: 14px;
+  height: 10px;
+  border-radius: 3px;
+}
+.stats-page .stats-legend__swatch--expense {
+  background: var(--ui-expense);
+}
+.stats-page .stats-legend__swatch--income {
+  background: var(--ui-income);
+}
+
+/* ---------- 时间段：月度 ---------- */
+.stats-page .stats-months {
+  display: flex;
+  flex-direction: column;
+}
+.stats-page .stats-month {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) minmax(0, 220px);
+  align-items: center;
+  gap: 10px 14px;
+  padding: 10px 0;
+  border-top: 1px solid #e6eaf0;
+  font-size: 13px;
+  min-width: 0;
+}
+.stats-page .stats-month:first-child {
+  border-top: 0;
+}
+.stats-page .stats-month__label {
+  white-space: nowrap;
+  color: var(--ui-text);
+}
+.stats-page .stats-month__bars {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.stats-page .stats-bar {
+  display: block;
+  height: 8px;
+  max-width: 100%;
+  border-radius: 4px;
+}
+.stats-page .stats-bar--expense {
+  background: var(--ui-expense);
+}
+.stats-page .stats-bar--income {
+  background: var(--ui-income);
+}
+.stats-page .stats-month__values {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.stats-page .stats-month__values b {
+  font-weight: 600;
+}
+
+/* ---------- 列表子页（对账 / 事件分布 / 圈层） ---------- */
+.stats-page .stats-list {
+  display: flex;
+  flex-direction: column;
+}
+.stats-page .stats-list__item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+  align-items: center;
+  gap: 6px 16px;
+  padding: 14px 4px;
+  border-bottom: 1px solid #e6eaf0;
+  min-width: 0;
+}
+.stats-page .stats-list__item:last-child {
+  border-bottom: 0;
+}
+.stats-page .stats-list__name {
+  min-width: 0;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.stats-page .stats-list__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  min-width: 0;
+  font-size: 13px;
+}
+.stats-page .stats-list__facts > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.stats-page .stats-list__facts small {
+  color: var(--ui-muted);
+}
+.stats-page .stats-list__balance {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.stats-page .stats-list__balance small,
+.stats-page .stats-ratio small {
+  color: var(--ui-muted);
+}
+
+/* 事件分布的占比条 */
+.stats-page .stats-ratio {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: 12px;
+}
+.stats-page .stats-ratio__track {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 8px;
+  border-radius: 4px;
+  background: #eef2f8;
+  overflow: hidden;
+}
+.stats-page .stats-ratio__fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--ui-expense);
+}
+.stats-page .stats-ratio small {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* ---------- 平板：701～1100px ---------- */
+@media (min-width: 701px) and (max-width: 1100px) {
+  .stats-page .stats-month {
+    grid-template-columns: 44px minmax(0, 1fr) minmax(0, 190px);
+    gap: 8px 12px;
+  }
+}
+
+/* ---------- 手机：≤700px ---------- */
+@media (max-width: 700px) {
+  .stats-page .stats-year {
+    padding: 14px;
+    gap: 10px;
+  }
+  .stats-page .stats-year__field {
+    width: 100%;
+  }
+  .stats-page .stats-year__meta {
+    flex-basis: 100%;
+  }
+  .stats-page .stats-panel {
+    gap: 14px;
+  }
+
+  /* 合计：改为一行一项，值靠右，字号放大到 17px 保证可读 */
+  .stats-page .stats-totals {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .stats-page .stats-total {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 6px 10px;
+    padding: 10px 12px;
+  }
+  .stats-page .stats-total strong {
+    margin-top: 0;
+    font-size: 17px;
+  }
+  .stats-page .stats-total__note {
+    flex-basis: 100%;
+    margin-top: 0;
+  }
+
+  /* 月度：月份＋进度条一行，随出/收到数值换行到下一行 */
+  .stats-page .stats-month {
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 6px 10px;
+  }
+  .stats-page .stats-month__values {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 2px 10px;
+    text-align: left;
+  }
+
+  /* 列表：单列排列，避免小屏挤压 */
+  .stats-page .stats-list__item {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+}
+
+/* ---------- 窄屏：≤420px ---------- */
+@media (max-width: 420px) {
+  .stats-page .stats-year {
+    padding: 12px;
+  }
+  .stats-page .stats-panel {
+    padding: 14px;
+  }
+  .stats-page .stats-total strong {
+    font-size: 16px;
+  }
+  .stats-page .stats-month {
+    font-size: 12px;
+  }
+  .stats-page .stats-month__values {
+    font-size: 11px;
+  }
+  .stats-page .stats-list__name,
+  .stats-page .stats-list__facts {
+    font-size: 13px;
+  }
+  .stats-page .stats-ratio small {
+    white-space: normal;
+  }
+}
+
+/* 当前统计仅保留三种分类；不影响“我的”的四个子页。 */
+.statistics-page .subpage-tabs {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 420px) {
+  .statistics-page .subpage-tabs button {
+    padding-inline: 6px;
+  }
+}
+
+/* Independent review page. Shared production styles supply every existing business control. */
+.statistics-controls > .toolbar { padding: 0; margin: 14px 0 0; border: 0; border-radius: 0; box-shadow: none; background: transparent; }
+.statistics-page .subpage-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.statistics-page .stats-date-range .field { width: 144px; }
+.statistics-single-select .select-trigger { display: flex; align-items: center; justify-content: space-between; gap: 9px; width: 100%; min-height: 54px; border: 1px solid var(--ui-border); border-radius: 12px; background: var(--ui-surface); padding: 12px; text-align: left; }
+.statistics-date-menu { position: absolute; z-index: 1; box-sizing: border-box; padding: 7px; overflow-y: auto; pointer-events: auto; overscroll-behavior: contain; }
+.statistics-date-menu .option-row { display: flex; align-items: center; gap: 10px; min-height: 44px; width: 100%; padding: 9px 10px; background: var(--ui-surface); border: 0; border-radius: 8px; color: var(--ui-text); text-align: left; }
+.statistics-date-menu .option-row.selected { background: var(--ui-primary-soft); }
+.statistics-date-menu .option-row:hover { background: var(--ui-primary-soft); }
+.statistics-radio { flex: none; width: 18px; height: 18px; border: 1px solid #74849a; border-radius: 50%; box-sizing: border-box; display: grid; place-items: center; }
+.statistics-radio.selected { border-color: var(--ui-primary); }
+.statistics-radio.selected::after { content: ''; display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--ui-primary); }
+@media (max-width: 700px) {
+  .statistics-page .stats-date-range { display: flex; width: 100%; }
+  .statistics-page .stats-date-range .field { width: auto; flex: 1; min-width: 0; }
+}
+@media (max-width: 420px) {
+  .statistics-page .stats-period-row { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .statistics-page .stats-date-range { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .statistics-page .stats-date-range > span { display: none; }
+  .statistics-page .subpage-tabs button { padding-inline: 6px; }
+}

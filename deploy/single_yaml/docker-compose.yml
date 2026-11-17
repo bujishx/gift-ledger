@@ -1,0 +1,247 @@
+# 往来有礼 · 单文件安装候选版 · Linux/amd64
+# 将本文件放入选定的站点目录。数据库、网站文件、网址及本站公开证书保存在同级的 data 目录。
+# 填写本机局域网 IP、空闲 HTTPS 端口。已有的站点继续使用原数据目录和项目名。
+# Ubuntu：docker compose up -d。群晖：Container Manager → 项目 → 新增 → 使用已有 YAML。
+# 钥匙登记后，在此目录运行 docker compose run --rm backup 可生成并核验整站备份。
+name: gift-ledger
+x-site-ip: &site-ip "${GIFTLEDGER_SITE_IP:-192.168.1.20}"
+x-site-port: &site-port "${GIFTLEDGER_HTTPS_PORT:-8443}"
+
+x-site: &site
+  GIFTLEDGER_SITE_IP: *site-ip
+  GIFTLEDGER_HTTPS_PORT: *site-port
+  GIFTLEDGER_PROJECT: "${COMPOSE_PROJECT_NAME:-gift-ledger}"
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+
+x-app: &app
+  <<: *site
+  GIFT_LEDGER_ENVIRONMENT: production
+  GIFT_LEDGER_LOG_LEVEL: INFO
+  GIFT_LEDGER_REGISTRATION_ENABLED: "true"
+  GIFT_LEDGER_AUTH_COOKIE_SECURE: "true"
+  GIFT_LEDGER_IMPORT_TEMP_DIR: /var/lib/gift-ledger/imports
+  GIFT_LEDGER_PERSONAL_RESTORE_TEMP_DIR: /var/lib/gift-ledger/personal-restores
+  GIFT_LEDGER_PERSONAL_SAFETY_BACKUP_DIR: /var/lib/gift-ledger/personal-safety-backups
+  GIFT_LEDGER_ADMIN_BACKUP_DIR: /var/lib/gift-ledger/admin-backups
+  GIFT_LEDGER_ADMIN_BACKUP_MYSQLDUMP_PATH: /usr/bin/mysqldump
+  GIFT_LEDGER_ADMIN_BACKUP_MYSQL_PATH: /usr/bin/mysql
+
+x-runtime: &runtime
+  platform: linux/amd64
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: "3"}
+
+x-installer: &installer
+  <<: *runtime
+  image: giftledger-candidate/installer:1.5.0-stage2-r1
+  user: "0:0"
+  restart: "no"
+  network_mode: none
+  mem_limit: 768m
+  read_only: true
+  cap_drop: [ALL]
+  cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+  security_opt: [no-new-privileges:true]
+  healthcheck: {disable: true}
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=128m
+    - /var/lib/mysql:rw,noexec,nosuid,nodev,size=16m
+
+services:
+  prepare:
+    <<: *installer
+    image: giftledger-candidate/backup:1.5.0-stage5-r1
+    environment: *site
+    command: [prepare]
+    volumes:
+      - "${GIFTLEDGER_SITE_DIR:-.}:/station"
+      - mysql_socket:/work/mysql
+  backup: &maintenance-coordinator
+    <<: *runtime
+    image: giftledger-candidate/backup:1.5.0-stage5-r1
+    profiles: [maintenance]
+    command: [backup]
+    environment: *site
+    network_mode: none
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    mem_limit: 256m
+    healthcheck: {disable: true}
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+      - /var/lib/mysql:rw,noexec,nosuid,nodev,size=16m
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-backup-state:/work/backup-state"
+      - "${GIFTLEDGER_SITE_DIR:-.}/backups:/work/backups"
+  backup-key:
+    <<: *installer
+    image: giftledger-candidate/backup:1.5.0-stage5-r1
+    profiles: [maintenance]
+    entrypoint: ["/opt/venv/bin/python3.12", "/opt/gift-ledger-install/backup_key.py"]
+    command: [enroll]
+    environment: *site
+    volumes:
+      - "${GIFTLEDGER_SITE_DIR:-.}/data/root_config:/work/site:ro"
+      - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-backup-state:/work/backup-state"
+      - backup_identity:/work/identity
+      - key_transfer:/work/key-transfer
+  restore:
+    <<: *maintenance-coordinator
+    entrypoint: ["/opt/venv/bin/python3.12", "/opt/gift-ledger-install/restore_site.py"]
+    command: []
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-backup-state:/work/backup-state"
+      - "${GIFTLEDGER_SITE_DIR:-.}/restore-input:/work/restore-input:ro"
+  restore-key:
+    <<: *installer
+    image: giftledger-candidate/backup:1.5.0-stage5-r1
+    profiles: [maintenance]
+    entrypoint: ["/opt/venv/bin/python3.12", "/opt/gift-ledger-install/backup_key.py"]
+    command: [restore-key]
+    environment: *site
+    volumes:
+      - "${GIFTLEDGER_SITE_DIR:-.}/data/root_config:/work/site:ro"
+      - restore_identity:/work/restore-identity
+  restore-files:
+    <<: *installer
+    image: giftledger-candidate/backup:1.5.0-stage5-r1
+    profiles: [maintenance]
+    entrypoint: ["/opt/venv/bin/python3.12", "/opt/gift-ledger-install/restore_files.py"]
+    command: []
+    volumes:
+      - "${GIFTLEDGER_SITE_DIR:-.}/restore-input:/work/restore-input"
+  db:
+    <<: *runtime
+    image: giftledger-candidate/db:1.5.0-stage1-r1
+    restart: unless-stopped
+    mem_limit: 1g
+    depends_on:
+      prepare: {condition: service_completed_successfully}
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+      MYSQL_ROOT_HOST: localhost
+      TZ: Asia/Shanghai
+    volumes:
+      - "${GIFTLEDGER_SITE_DIR:-.}/data/db_secrets:/run/secrets:ro"
+      - "${GIFTLEDGER_SITE_DIR:-.}/data/mysql_data:/var/lib/mysql"
+      - mysql_socket:/var/run/mysqld
+    command: [--character-set-server=utf8mb4, --collation-server=utf8mb4_0900_bin]
+    networks: [private]
+    healthcheck:
+      test: [CMD, mysqladmin, ping, --host=127.0.0.1, --silent]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+  initialize:
+    <<: *installer
+    environment: *app
+    # Restarting the whole project can start this job while MySQL is still opening its socket.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        remaining=90
+        until mysqladmin --protocol=socket --socket=/work/mysql/mysqld.sock --connect-timeout=1 --silent ping >/dev/null 2>&1; do
+          if [ "$$remaining" -eq 0 ]; then echo "数据库尚未就绪，请查看 db 日志后重新构建本站项目。" >&2; exit 1; fi
+          remaining=$$((remaining - 1))
+          sleep 1
+        done
+        exec /opt/venv/bin/python3.12 /opt/gift-ledger-install/single_yaml_site.py "$$@"
+      - gift-ledger-initialize
+    command: [initialize]
+    depends_on:
+      db: {condition: service_healthy}
+    volumes:
+      - "${GIFTLEDGER_SITE_DIR:-.}/data/root_config:/work/site"
+      - "${GIFTLEDGER_SITE_DIR:-.}/data/app_secrets:/work/app-secrets:ro"
+      - "${GIFTLEDGER_SITE_DIR:-.}/data/db_secrets:/work/db-secrets:ro"
+      - "${GIFTLEDGER_SITE_DIR:-.}/data/tls_config:/work/tls:ro"
+      - "${GIFTLEDGER_SITE_DIR:-.}/data/app_data:/work/app-data"
+      - mysql_socket:/work/mysql
+  api:
+    <<: *runtime
+    image: giftledger-candidate/api:1.5.0-stage5-r1
+    restart: unless-stopped
+    mem_limit: 768m
+    user: "10001:0"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      db: {condition: service_healthy}
+      initialize: {condition: service_completed_successfully}
+    environment: *app
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        origin="https://$$GIFTLEDGER_SITE_IP"
+        if [ "$$GIFTLEDGER_HTTPS_PORT" != 443 ]; then origin="$$origin:$$GIFTLEDGER_HTTPS_PORT"; fi
+        export GIFT_LEDGER_TRUSTED_ORIGINS="$$origin"
+        exec /opt/venv/bin/python3.12 /app/deploy/api_entrypoint.py "$$@"
+      - gift-ledger-api
+    command: [python3.12, -m, uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --proxy-headers, --workers, "1"]
+    volumes:
+      - "${GIFTLEDGER_SITE_DIR:-.}/data/app_secrets:/run/secrets:ro"
+      - "${GIFTLEDGER_SITE_DIR:-.}/data/app_data:/var/lib/gift-ledger"
+    networks: [private]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
+      - /var/lib/mysql:rw,noexec,nosuid,nodev,size=16m
+    healthcheck:
+      test: [CMD, python3.12, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+  web:
+    <<: *runtime
+    image: giftledger-candidate/web:1.5.0-stage1-r1
+    restart: unless-stopped
+    mem_limit: 128m
+    read_only: true
+    depends_on:
+      api: {condition: service_healthy}
+    ports:
+      - target: 443
+        published: *site-port
+        host_ip: *site-ip
+    volumes:
+      - "${GIFTLEDGER_SITE_DIR:-.}/data/tls_config:/etc/nginx/certs:ro"
+    networks: [private, front]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+      - /var/cache/nginx:rw,nosuid,nodev,size=32m
+      - /var/run:rw,nosuid,nodev,size=16m
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  mysql_socket: {}
+  backup_identity:
+    labels:
+      org.gift-ledger.gui-v2-project: "${COMPOSE_PROJECT_NAME:-gift-ledger}"
+      org.gift-ledger.gui-v2-role: backup_identity
+  key_transfer:
+    labels:
+      org.gift-ledger.gui-v2-project: "${COMPOSE_PROJECT_NAME:-gift-ledger}"
+      org.gift-ledger.gui-v2-role: key_transfer
+  restore_identity:
+    labels:
+      org.gift-ledger.gui-v2-project: "${COMPOSE_PROJECT_NAME:-gift-ledger}"
+      org.gift-ledger.gui-v2-role: restore_identity
+networks:
+  private: {internal: true}
+  front: {}

@@ -1,0 +1,211 @@
+/* 任务 C（U12）登录 / 注册 / 首次本人建档的页面专用样式。
+ *
+ * 只使用 ui.css 的 --ui-* 变量与现有 card / field / primary / alert / form-stack 类。
+ * 全部选择器都限定在页面作用域类 .auth-page 之下，不重写任何全站选择器；
+ * 容器自身用 .auth-page.auth-shell 提高特异性，保证不受全局 .auth-shell 顺序影响。
+ * 断点沿用方案：电脑 >1100px、平板 701～1100px、手机 ≤700px、窄屏 ≤420px。
+ */
+
+/* ---------- 容器：保持独立居中布局 ---------- */
+.auth-page.auth-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--ui-background);
+  padding: 20px 16px;
+}
+
+.auth-page .auth-card {
+  width: min(420px, 100%);
+  max-width: 100%;
+  padding: 30px 28px;
+  border-radius: var(--ui-radius);
+  box-shadow: 0 10px 30px #182b430f;
+}
+
+/* ---------- 品牌与标题 ---------- */
+.auth-page .auth-head {
+  text-align: center;
+}
+
+.auth-page .auth-head .brand.large {
+  padding: 0;
+  justify-content: center;
+}
+
+.auth-page .auth-head h1 {
+  margin: 14px 0 4px;
+  font-size: 23px;
+  color: var(--ui-text);
+  overflow-wrap: anywhere;
+}
+
+.auth-page .auth-head p {
+  margin-bottom: 0;
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- 表单：沿用 field / form-stack，只调整本页间距 ---------- */
+.auth-page .form-stack {
+  margin-top: 20px;
+}
+
+.auth-page .field-label {
+  color: var(--ui-muted);
+}
+
+.auth-page .auth-field-help, .auth-page .auth-field-error {
+  font-size: 12px;
+  line-height: 1.6;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.auth-page .auth-field-help { color: var(--ui-muted); }
+.auth-page .auth-field-error { color: var(--ui-expense); }
+.auth-page .auth-password-control { position: relative; }
+.auth-page .auth-password-control input { padding-right: 62px; }
+.auth-page .auth-password-control button {
+  position: absolute;
+  top: 0;
+  right: 4px;
+  height: 100%;
+  min-width: 52px;
+  border: 0;
+  background: transparent;
+  color: var(--ui-primary);
+  font-size: 12px;
+}
+.auth-page .auth-password-control input[aria-invalid="true"] { border-color: var(--ui-expense); }
+
+/* 必填标记：始终跟随字段标签，不用颜色单独承载含义（同时有 required 属性） */
+.auth-req {
+  color: var(--ui-expense);
+  font-weight: 700;
+  margin-left: 2px;
+}
+
+.auth-page .auth-note {
+  margin: -6px 0 0;
+  font-size: 12px;
+  color: var(--ui-muted);
+}
+
+.auth-page button[type="submit"] {
+  min-height: 46px;
+  font-size: 16px;
+}
+
+/* ---------- 流程切换 ---------- */
+.auth-page .auth-switch {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.auth-page .auth-switch .text-button {
+  padding: 10px 8px;
+  font-size: 14px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+/* ---------- 首次建档说明：沿用站内浅蓝提示块与红支绿收 ---------- */
+.auth-page .auth-hint {
+  margin: 18px 0 0;
+  background: var(--ui-primary-soft);
+  border: 1px solid #cfe0ff;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--ui-text);
+  overflow-wrap: anywhere;
+}
+
+.auth-page .auth-hint b {
+  font-weight: 700;
+}
+
+.auth-page .auth-hint b.expense {
+  color: var(--ui-expense);
+}
+
+.auth-page .auth-hint b.income {
+  color: var(--ui-income);
+}
+
+/* ---------- 错误与提示：留在当前卡片内，长文本不撑破卡片 ---------- */
+.auth-page .alert {
+  margin: 16px 0 0;
+  align-items: flex-start;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- 平板 701～1100px：仍为单栏居中，卡片略放宽 ---------- */
+@media (min-width: 701px) and (max-width: 1100px) {
+  .auth-page .auth-card {
+    width: min(440px, 100%);
+  }
+}
+
+/* ---------- 手机 ≤700px：顶部对齐，避免软键盘弹出时上下裁切 ---------- */
+@media (max-width: 700px) {
+  .auth-page.auth-shell {
+    align-content: start;
+    padding: 16px 12px max(16px, env(safe-area-inset-bottom));
+  }
+
+  .auth-page .auth-card {
+    width: 100%;
+    padding: 24px 20px;
+  }
+
+  .auth-page .auth-head h1 {
+    font-size: 21px;
+  }
+}
+
+/* ---------- 窄屏 ≤420px：进一步压缩内边距，保证不出现横向滚动 ---------- */
+@media (max-width: 420px) {
+  .auth-page.auth-shell {
+    padding: 12px 10px max(12px, env(safe-area-inset-bottom));
+  }
+
+  .auth-page .auth-card {
+    padding: 20px 15px;
+  }
+
+  .auth-page .auth-head .brand.large {
+    font-size: 22px;
+  }
+
+  .auth-page .brand-mark {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    font-size: 17px;
+  }
+
+  .auth-page .auth-head h1 {
+    font-size: 20px;
+  }
+
+  .auth-page .auth-head p,
+  .auth-page .auth-hint {
+    font-size: 13px;
+  }
+
+  .auth-page .field input {
+    min-height: 46px;
+  }
+
+  .auth-page .alert {
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+
+  .auth-page .auth-switch .text-button {
+    font-size: 13px;
+  }
+}

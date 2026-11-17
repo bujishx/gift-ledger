@@ -1,0 +1,64 @@
+/* 用户审核通过的正式统计图表。红支绿收，浮动提示只含三项金额。 */
+.cr-trend-panel, .cr-analysis-panel { min-width: 0; }
+.cr-trend-panel .muted, .cr-analysis-panel .muted { font-size: 13px; line-height: 1.7; }
+.cr-grain-controls { display: flex; align-items: center; gap: 12px; margin: 17px 0 10px; color: var(--ui-muted); font-size: 13px; }
+.cr-grain-options { display: inline-flex; padding: 4px; gap: 4px; border: 1px solid var(--ui-border); border-radius: 14px; background: var(--ui-surface); }
+.cr-grain-options button { min-height: 36px; padding: 6px 17px; border: 0; border-radius: 10px; background: transparent; color: var(--ui-muted); font-size: 13px; white-space: nowrap; }
+.cr-grain-options button.active { background: var(--ui-primary-soft); color: var(--ui-primary); font-weight: 700; }
+.cr-chart-range { margin: 0 0 12px; }
+.cr-chart-frame { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 8px; padding-top: 27px; min-width: 0; }
+.cr-y-axis { position: relative; padding-bottom: 44px; }
+.cr-axis-title { position: absolute; right: 0; top: -27px; white-space: nowrap; font-size: 11px; color: var(--ui-muted); }
+.cr-axis-scale { position: relative; }
+.cr-axis-scale span { position: absolute; right: 0; transform: translateY(-50%); line-height: 1; font-size: 11px; color: var(--ui-muted); font-variant-numeric: tabular-nums; }
+.cr-trend-scroll { min-width: 0; overflow-x: auto; overflow-y: hidden; padding: 8px 0 10px; margin-top: -8px; overscroll-behavior-inline: contain; }
+.cr-trend-canvas { position: relative; display: flex; width: 100%; }
+.cr-trend-grid { position: absolute; inset: 0 0 auto; pointer-events: none; }
+.cr-trend-grid i { position: absolute; left: 0; right: 0; border-top: 1px solid var(--ui-border); }
+.cr-trend-grid i.baseline { border-color: #90a3bd; }
+.cr-trend-column.trend-column { position: relative; display: block; flex: 1 0 var(--trend-column-width, 84px); min-width: var(--trend-column-width, 84px); padding: 0 7px; gap: 0; border: 0; background: transparent; color: var(--ui-muted); border-radius: 5px; font-size: 11px; line-height: 1.4; }
+.cr-trend-column:hover, .cr-trend-column.selected { background: var(--ui-primary-soft); }
+.cr-trend-bar:focus-visible, .cr-time-label:focus-visible, .cr-grain-options button:focus-visible, .cr-category-button:focus-visible, .cr-bar-amount:focus-visible { outline: 2px solid var(--ui-primary); outline-offset: 3px; }
+.cr-trend-bars { display: flex; align-items: flex-end; justify-content: center; gap: 6px; }
+.cr-trend-bars .cr-trend-bar { display: block; width: 17px; flex: 0 0 17px; border: 0; padding: 0; min-height: 0; border-radius: 4px 4px 0 0; max-height: 100%; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.cr-time-label { display: flex; width: 100%; align-items: center; justify-content: center; min-height: 38px; border: 0; background: transparent; color: var(--ui-muted); font-size: 11px; line-height: 1.4; padding: 7px 0 0; white-space: nowrap; }
+.cr-time-label:hover:not(:disabled) { color: var(--ui-primary); text-decoration: underline; }
+.cr-time-label:disabled { cursor: default; opacity: .6; }
+.cr-chart-help { margin: 14px 0 0; }
+.cr-no-trend { padding: 20px 0; }
+.cr-trend-tooltip { position: fixed; z-index: 300; width: max-content; max-width: calc(100vw - 16px); padding: 10px 13px; border: 1px solid var(--ui-border); border-radius: 12px; background: var(--ui-surface); box-shadow: 0 6px 18px #163a6526; color: var(--ui-muted); font-size: 13px; line-height: 1.7; font-variant-numeric: tabular-nums; }
+.cr-trend-tooltip p { display: flex; align-items: baseline; margin: 0; white-space: nowrap; }
+.cr-trend-tooltip strong { font-size: 14px; font-weight: 700; }
+.cr-trend-tooltip .expense { color: var(--ui-expense); }
+.cr-trend-tooltip .income { color: var(--ui-income); }
+.cr-category-button:disabled, .cr-bar-amount:disabled { opacity: .48; cursor: default; text-decoration: none; }
+.cr-date-note { margin-bottom: 0; }
+.cr-analysis-row { border-bottom: 1px solid var(--ui-border); padding: 16px 0; }
+.cr-analysis-row:last-of-type { border-bottom: 0; }
+.cr-analysis-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; }
+.cr-category-button { padding: 0; border: 0; background: transparent; color: var(--ui-text); font-size: 16px; line-height: 1.5; font-weight: 700; text-align: left; }
+.cr-category-button:hover:not(:disabled) { color: var(--ui-primary); text-decoration: underline; }
+.cr-analysis-heading small { color: var(--ui-muted); font-size: 12px; line-height: 1.7; }
+.cr-analysis-bar { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 8px; margin-top: 12px; }
+.cr-analysis-bar > small { font-size: 12px; color: var(--ui-muted); }
+/* The right reserve belongs to the label, rather than clipping a long maximum bar. */
+.cr-analysis-plot { position: relative; height: 24px; margin-right: var(--cr-amount-reserve, 104px); }
+.cr-analysis-plot > i { display: block; position: absolute; top: 7px; left: 0; height: 11px; border-radius: 4px; }
+.cr-bar-amount { position: absolute; top: 0; transform: translateX(9px); border: 0; background: transparent; padding: 3px 0; min-height: 24px; line-height: 18px; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: left; }
+.cr-bar-amount.expense { color: var(--ui-expense); }
+.cr-bar-amount.income { color: var(--ui-income); }
+.cr-bar-amount:hover:not(:disabled) { text-decoration: underline; }
+@media (max-width: 700px) {
+  .cr-analysis-heading { align-items: flex-start; }
+}
+@media (max-width: 420px) {
+  .cr-grain-controls { flex-direction: column; align-items: flex-start; gap: 7px; }
+  .cr-grain-options { display: flex; width: 100%; }
+  .cr-grain-options button { flex: 1; padding-inline: 8px; }
+  .cr-chart-frame { grid-template-columns: 47px minmax(0, 1fr); gap: 5px; }
+  .cr-axis-scale span { font-size: 10px; }
+  .cr-axis-title { font-size: 10px; }
+  .cr-analysis-heading { flex-direction: column; gap: 3px; }
+  .cr-analysis-plot { margin-right: var(--cr-amount-reserve, 88px); }
+  .cr-bar-amount { font-size: 12px; transform: translateX(7px); }
+}

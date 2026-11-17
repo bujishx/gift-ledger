@@ -1,0 +1,70 @@
+/* 录入窗口：在 family 外观内补齐小弹窗、指南及触屏输入。 */
+.compact-family-dialog > .family-modal.modal-shell { width:min(520px,calc(100vw - 48px)); min-height:0; }
+.compact-family-dialog > .family-modal .modal-body { flex:0 1 auto; }
+.compact-family-dialog .dialog-message { margin:0 0 16px; color:var(--family-muted); font-size:16px; line-height:1.65; }
+.compact-family-dialog .modal-body:not(:has(input)) .dialog-message { margin-bottom:0; }
+.family-modal.modal-shell .danger-outline { border:1px solid #d89086; border-radius:22px; padding:10px 16px; background:white; color:#b33428; }
+.family-modal.modal-shell .danger-outline:hover { background:#fff4f2; }
+.family-modal.modal-shell .direction-strip.neutral {
+  padding:0; border:0; border-radius:0; margin:14px 0; background:transparent;
+  color:var(--family-muted); font-size:13px; line-height:1.6;
+}
+.business-guide .family-modal.modal-shell .accounting-guide { padding:0; margin:0; }
+.business-guide .family-modal.modal-shell .accounting-guide > strong { display:block; margin:0 0 16px; font-size:16px; color:var(--family-ink); }
+.business-guide .family-modal.modal-shell .guide-steps { display:flex; flex-direction:column; gap:14px; margin:0; }
+.business-guide .family-modal.modal-shell .guide-steps li { display:block; padding:0; }
+.business-guide .family-modal.modal-shell .guide-steps button {
+  width:100%; display:flex; align-items:flex-start; text-align:left; gap:12px; padding:12px;
+  border:1px solid var(--family-line); border-radius:12px; background:#fff; color:#173c67;
+}
+.business-guide .family-modal.modal-shell .guide-steps button:hover { background:#f5f8ff; }
+.business-guide .family-modal.modal-shell .guide-steps b { width:30px; height:30px; flex:none; font-size:14px; background:var(--family-tint); }
+.business-guide .family-modal.modal-shell .guide-step-copy { min-width:0; display:flex; flex-direction:column; gap:6px; }
+.business-guide .family-modal.modal-shell .guide-step-copy strong { color:var(--family-blue); font-size:16px; line-height:1.5; }
+.business-guide .family-modal.modal-shell .guide-step-copy small { color:var(--family-muted); font-size:13px; line-height:1.6; font-weight:400; }
+.business-guide .family-modal.modal-shell .accounting-guide > p { margin:16px 0 0; color:var(--family-muted); font-size:13px; }
+.family-modal.modal-shell .conflict-card { margin:16px 0; border:1px solid #e3cda5; border-radius:12px; padding:14px; background:#fffaf0; color:var(--family-ink); }
+.family-modal.modal-shell .conflict-card > p { margin:0 0 10px; font-size:14px; color:#805820; }
+.family-modal.modal-shell .conflict-summary { display:grid; gap:5px; font-size:14px; line-height:1.6; overflow-wrap:anywhere; }
+.family-modal.modal-shell .conflict-summary strong { font-size:16px; }
+.family-modal.modal-shell .conflict-summary small { font-size:13px; color:var(--family-muted); }
+.family-modal.modal-shell .conflict-detail { font-size:13px; color:var(--family-muted); }
+.family-modal.modal-shell .conflict-message { margin:0 0 10px; color:#805820; font-size:14px; }
+.family-modal.modal-shell .draft-return-note { padding:10px 0; margin-bottom:12px; color:var(--family-muted); font-size:13px; line-height:1.6; }
+.family-modal.modal-shell .draft-return-note button { margin-left:8px; }
+.family-modal.modal-shell .conflict-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.family-modal.modal-shell .conflict-actions button { min-height:44px; padding:8px 16px; }
+
+/* 外框承载一次高度和留白，原生输入占满可点击区并保持普通大小的光标。 */
+.family-modal.modal-shell .amount-control {
+  height:50px; min-height:50px; padding:0 12px; box-sizing:border-box; align-items:center; cursor:text;
+}
+.family-modal.modal-shell .amount-control input {
+  flex:0 1 auto; width:auto; min-width:3.5ch; min-height:0; height:48px; padding:0;
+  font:inherit; font-size:16px; line-height:24px; field-sizing:content; caret-color:var(--family-ink);
+}
+.family-modal.modal-shell .amount-control input:placeholder-shown { min-width:0; flex:1 1 auto; field-sizing:fixed; }
+.family-modal.modal-shell .amount-control .amount-unit { flex:none; font-size:14px; line-height:24px; }
+.family-modal.modal-shell .picker-control { height:50px; padding:0; box-sizing:border-box; }
+.family-modal.modal-shell .picker-control input { min-height:0; height:48px; }
+.family-modal.modal-shell .picker-control > button { width:36px; min-width:36px; height:44px; min-height:44px; padding:0; flex:none; }
+.family-modal.modal-shell .picker-menu { border-color:var(--family-line); border-radius:12px; touch-action:pan-y; overscroll-behavior:contain; }
+.family-modal.modal-shell .picker-option { min-height:64px; font-size:16px; font-weight:400; touch-action:pan-y; }
+.family-modal.modal-shell .picker-option > span { font-size:16px; line-height:1.5; }
+.family-modal.modal-shell .picker-option > small { font-size:13px; color:var(--family-muted); }
+.family-modal.modal-shell .picker-option[aria-selected="true"] { background:var(--family-tint); }
+.family-modal.modal-shell textarea.remark-input { min-height:50px; line-height:24px; resize:none; }
+.entry-notes-modal > .family-modal.modal-shell .modal-body { padding-bottom:16px; }
+.entry-notes-modal .entry-footer-hint { margin:0; }
+
+@media(max-width:700px) {
+  .compact-family-dialog > .family-modal.modal-shell { width:calc(100vw - 32px); }
+  html[data-modal-family-keyboard] .family-modal.modal-shell :is(.modal-head,.filter-dialog-head) { padding:6px 16px; min-height:56px; }
+  html[data-modal-family-keyboard] .family-modal.modal-shell :is(.modal-footer,.filter-dialog-footer) { padding:6px 16px; }
+  html[data-modal-family-keyboard] .family-modal.modal-shell .modal-body { padding:12px 16px; }
+  html[data-modal-family-keyboard] .family-modal.modal-shell .form-actions button { padding:8px 14px; min-height:44px; }
+  html[data-modal-family-keyboard] .family-modal.modal-shell .contact-picker .picker-menu {
+    position:relative; top:auto; left:auto; right:auto; margin-top:4px;
+    max-height:min(210px,42dvh); box-shadow:0 5px 16px #173c6714;
+  }
+}

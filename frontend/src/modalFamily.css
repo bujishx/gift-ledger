@@ -1,0 +1,110 @@
+/* 三个主要业务页共用窗口外观；其他确认、密码和字典弹窗不加入此样式。 */
+.family-modal {
+  --family-blue:#0b54c5; --family-ink:#1c2737; --family-muted:#647184;
+  --family-line:#d5e2f5; --family-tint:#edf4ff;
+}
+:is(.family-modal.float-card,.family-modal.filter-dialog,.family-modal.modal-shell) {
+  font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif; font-size:16px; line-height:1.55;
+  background:#fff; color:var(--family-ink); border:1px solid var(--family-line); border-radius:20px;
+  box-shadow:0 20px 60px #15263b33; box-sizing:border-box;
+}
+.family-backdrop:is(.drawer-backdrop,.modal-backdrop) { background:rgb(36 52 72 / 35%); }
+dialog.family-modal.filter-dialog::backdrop { background:rgb(36 52 72 / 35%); }
+.family-modal :is(.detail-card-head,.filter-dialog-head,.modal-head) {
+  background:var(--family-tint); border-bottom:1px solid var(--family-line); padding:14px 20px;
+  min-height:68px; display:flex; align-items:center; gap:12px; flex-shrink:0;
+}
+.family-modal :is(.detail-card-title,.filter-dialog-head h2,.modal-head h2) {
+  font-size:20px; line-height:1.4; font-weight:700; color:#173c67; margin:0; min-width:0; overflow-wrap:anywhere;
+}
+.family-modal .detail-card-title { display:block; user-select:text; -webkit-user-select:text; cursor:text; touch-action:auto; }
+.family-modal :is(.detail-card-head,.filter-dialog-head,.modal-head) > .icon-button {
+  display:flex; align-items:center; justify-content:center; gap:8px; flex:none; width:auto; height:auto;
+  min-width:78px; min-height:44px; padding:6px 8px; border:0; border-radius:8px; background:transparent;
+  color:#315b85; font-size:14px; line-height:1.4; white-space:nowrap;
+}
+.family-modal :is(.detail-card-head,.filter-dialog-head,.modal-head) > .icon-button:hover { background:#dce9fb; }
+.family-modal :is(.detail-card-head,.filter-dialog-head,.modal-head) > .icon-button span[aria-hidden] { font-size:24px; line-height:1; }
+.family-modal .family-close-label { font-size:14px; }
+.family-modal .filter-dialog-head small { display:block; margin-top:4px; font-size:13px; line-height:1.5; color:var(--family-muted); }
+.family-modal :is(.modal-body,.filter-dialog-body,.detail-card-body) { padding:20px; background:white; min-height:0; overscroll-behavior:contain; }
+.family-modal :is(.modal-footer,.filter-dialog-footer) { background:var(--family-tint); border-top:1px solid var(--family-line); padding:12px 20px; gap:12px; flex-shrink:0; }
+.family-modal:is(.float-card,.filter-dialog,.modal-shell) button { font-family:inherit; font-size:14px; line-height:1.45; min-height:44px; white-space:normal; overflow-wrap:anywhere; }
+.family-modal:is(.float-card,.filter-dialog,.modal-shell) button.primary { background:var(--family-blue); color:white; border-color:var(--family-blue); }
+.family-modal:is(.float-card,.filter-dialog,.modal-shell) button.outline { background:white; color:var(--family-blue); border:1px solid var(--family-line); }
+.family-modal:is(.float-card,.filter-dialog,.modal-shell) button.soft-primary { background:#d7e6ff; color:#173c67; }
+.family-modal:is(.float-card,.filter-dialog,.modal-shell) button:disabled { opacity:1; background:#e9eff6; border-color:#e9eff6; color:#8b98a8; cursor:not-allowed; }
+.family-modal:is(.float-card,.filter-dialog,.modal-shell) :is(input,select,textarea) { font:inherit; font-size:16px; border:1px solid var(--family-line); border-radius:12px; background:#fff; color:var(--family-ink); min-height:50px; min-width:0; padding:10px 12px; box-sizing:border-box; }
+.family-modal:is(.float-card,.filter-dialog,.modal-shell) textarea { min-height:88px; }
+.family-modal:is(.modal-shell,.filter-dialog) .field { font-size:14px; color:#56677f; gap:7px; min-width:0; }
+.family-modal.modal-shell .form-stack { gap:16px; }
+.family-modal.modal-shell .small-link { font-size:14px; }
+.family-modal.modal-shell :is(.info-strip,.direction-strip) { font-size:14px; line-height:1.6; padding:12px 14px; }
+.family-modal.modal-shell :is(.field small,.field-help,.picker-help,.empty-small,.entry-placeholder) { font-size:13px; }
+.family-modal.modal-shell .form-actions { flex-wrap:wrap; gap:8px; }
+.family-modal.modal-shell .form-actions button { padding:10px 16px; height:auto; }
+.family-modal.float-card .detail-head h2 { font-size:16px; line-height:1.6; font-weight:700; }
+.family-modal.float-card .status-pill { font-size:13px; white-space:normal; }
+.family-modal.float-card .card-metrics { gap:10px; }
+.family-modal.float-card .metric { background:var(--family-tint); border-color:var(--family-line); padding:12px; min-width:0; }
+.family-modal.float-card .metric small { font-size:14px; color:#61718a; line-height:1.5; }
+.family-modal.float-card .metric b { font-size:16px; line-height:1.5; overflow-wrap:anywhere; }
+.family-modal.float-card .metric.family-money b { font-size:20px; font-weight:700; }
+.family-modal.float-card .metric b.expense { color:#C8392B; }
+.family-modal.float-card .metric b.income { color:#3E8E5A; }
+.family-modal.float-card .approved-detail-actions button { font-size:14px; min-height:48px; height:auto; padding:10px 6px; white-space:normal; }
+.family-modal.float-card .detail-availability-status { margin:10px 0; color:var(--family-muted); font-size:13px; line-height:1.55; }
+.family-modal.float-card .detail-availability-status .small-link { margin-left:8px; padding:0 6px; font-size:13px; }
+.family-modal.filter-dialog .filter-dialog-fields { gap:18px; grid-template-columns:minmax(0,1fr); }
+.family-modal.filter-dialog .select-trigger { min-height:50px; height:auto; padding:12px; font-size:16px; border-color:var(--family-line); background:#fff; border-radius:12px; }
+.family-modal.filter-dialog .selection-text { font-size:16px; white-space:normal; line-height:1.5; }
+.family-modal.filter-dialog .selection-total { font-size:13px; flex:none; }
+.family-modal.filter-dialog .filter-option-menu .option-row { min-height:44px; font-size:16px; line-height:1.5; }
+.family-modal.filter-dialog .filter-option-menu input[type="checkbox"] { width:18px; height:18px; min-height:18px; padding:0; border-radius:3px; }
+.family-modal.filter-dialog .filter-option-menu .option-clear { font-size:14px; }
+.family-modal.filter-dialog .filter-dialog-selected { margin-top:24px; padding-top:16px; }
+.family-modal.filter-dialog .selection-heading { font-size:16px; }
+.family-modal.filter-dialog .filter-chip { min-height:44px; font-size:13px; }
+.family-modal.filter-dialog :is(.filter-none,.filter-dialog-feedback,.filter-dialog-feedback small) { font-size:13px; line-height:1.55; }
+.family-modal.filter-dialog .date-field input { min-height:50px; padding:9px; }
+.family-modal.modal-shell .entry-event-list .choice-title-line strong { font-size:16px; }
+.family-modal.modal-shell .entry-event-list .choice-details { font-size:13px; }
+.family-modal.modal-shell .entry-event-list .selected-badge { font-size:13px; }
+.family-modal.modal-shell .entry-event-choice { min-height:78px; }
+.family-modal.modal-shell :is(.selected-event-title,.summary-event-title) { font-size:16px; }
+.family-modal.modal-shell :is(.summary-heading,.confirmation-heading strong) { font-size:16px; }
+.family-modal.modal-shell :is(.summary-dates,.summary-next,.selection-confirmation small) { font-size:13px; }
+.family-modal.modal-shell .giver-card { background:#f5f8ff; border-color:var(--family-line); }
+.family-modal.modal-shell :is(.search-wrap,.picker-control,.amount-control) { min-height:50px; border:1px solid var(--family-line); border-radius:12px; background:white; }
+.family-modal.modal-shell :is(.search-wrap,.picker-control,.amount-control) input { border:0; background:transparent; border-radius:0; outline-offset:-3px; }
+.family-modal.modal-shell .search-wrap { padding:0 12px; }
+.family-modal.modal-shell .search-wrap input { padding:10px 0; }
+.family-modal:is(.modal-shell,.float-card):focus-visible { outline:none; }
+.family-modal.filter-dialog .text-button:disabled { background:transparent; border-color:transparent; }
+html[data-modal-family-task] .bottom-nav { filter:brightness(.65); }
+html[data-modal-family-keyboard] .bottom-nav { visibility:hidden; }
+@media(max-width:700px) {
+  .family-backdrop.modal-backdrop { display:block; padding:0; }
+  :is(.family-modal.modal-shell,.family-modal.modal-shell.entry-modal,.family-modal.person-drawer.float-card,dialog.family-modal.filter-dialog) {
+    position:fixed; left:16px !important; right:16px !important; top:auto !important;
+    bottom:var(--family-bottom,104px) !important; margin:0; width:calc(100vw - 32px); max-width:none;
+    min-height:0; height:auto; max-height:var(--family-max-height,calc(100dvh - 120px)); transform:none;
+    border-radius:20px; padding:0; overflow:hidden;
+  }
+  dialog.family-modal.filter-dialog { inset-block-start:auto; inset-block-end:var(--family-bottom,104px); }
+  .family-backdrop.drawer-backdrop { bottom:0; inset-block-end:0; }
+  .family-modal :is(.detail-card-head,.filter-dialog-head,.modal-head) { padding:12px 16px; min-height:64px; }
+  .family-modal :is(.modal-body,.filter-dialog-body,.detail-card-body) { padding:16px; }
+  .family-modal :is(.modal-footer,.filter-dialog-footer) { padding:12px 16px; }
+  .family-modal.filter-dialog .filter-dialog-feedback { flex:1; }
+  .family-modal.filter-dialog .filter-dialog-footer .primary { padding:10px 16px; min-width:68px; }
+  .family-modal.modal-shell .entry-picker .entry-event-list { max-height:240px; }
+}
+@media(max-width:360px) {
+  .family-modal.float-card .card-metrics { grid-template-columns:minmax(0,1fr); }
+  .family-modal.filter-dialog .date-field > div { flex-wrap:wrap; }
+  .family-modal.filter-dialog .date-field input { flex:1 1 100%; width:100%; }
+  .family-modal.filter-dialog .date-field > div > span { width:100%; text-align:center; }
+  .family-modal.modal-shell .form-actions button { padding:9px 12px; }
+  .family-modal.float-card .metric { padding:10px; }
+}

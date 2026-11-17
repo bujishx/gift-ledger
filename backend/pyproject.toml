@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gift-ledger-backend"
+version = "0.1.0"
+description = "往来有礼 FastAPI 后端"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "alembic==1.20.0",
+    "defusedxml==0.7.1",
+    "fastapi==0.141.1",
+    "openpyxl==3.1.5",
+    "pydantic-settings==2.15.0",
+    "PyJWT==2.15.0",
+    "PyMySQL[rsa]==1.2.3",
+    "python-multipart==0.0.32",
+    "pwdlib[argon2]==0.3.1",
+    "SQLAlchemy==2.0.54",
+    "uvicorn==0.54.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx2==2.13.1",
+    "pytest==9.1.1",
+    "ruff==0.16.9",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["resources/*.xlsx"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+markers = [
+    "mysql_integration: 仅在显式配置的独立 MySQL 8.4 测试库中运行",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+ignore = ["RUF001"]
