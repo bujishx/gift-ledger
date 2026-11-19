@@ -22,7 +22,6 @@ import tempfile
 import threading
 import time
 import uuid
-from urllib.parse import urlsplit
 
 RELEASE_YAML = Path(__file__).resolve().with_name("docker-compose.yml")
 RECIPIENT = re.compile(r"age1[023456789acdefghjklmnpqrstuvwxyz]{58}")
@@ -312,6 +311,19 @@ def add_site_options(parser):
     parser.add_argument("--site-url", help="本站说明中的 HTTPS 网址")
 
 
+def site_endpoint(value):
+    message = "请输入网站地址.txt 中的完整 HTTPS IPv4 网址，例如 https://192.168.1.20:8443/。"
+    match = re.fullmatch(r"https://([0-9.]+)(?::([0-9]{1,5}))?/?", value, flags=re.IGNORECASE | re.ASCII)
+    check(match, message)
+    try:
+        address = ipaddress.IPv4Address(match[1])
+    except ValueError:
+        raise EnrollmentError(message) from None
+    port = int(match[2]) if match[2] else 443
+    check(1 <= port <= 65535, "本站 HTTPS 端口无效。")
+    return str(address), port
+
+
 def compose_command(args, arguments, *, default_file=False):
     options = ["compose", "--project-directory", args.project_dir]
     config = getattr(args, "compose_file", None)
@@ -326,13 +338,8 @@ def compose_command(args, arguments, *, default_file=False):
         settings.append("GIFTLEDGER_SITE_DIR=" + station)
     value = getattr(args, "site_url", None)
     if value:
-        url = urlsplit(value)
-        check(url.scheme == "https" and url.path in ("", "/") and url.hostname and not
-              (url.username or url.password or url.query or url.fragment), "本站网址须为 HTTPS IPv4 地址。")
-        address = ipaddress.IPv4Address(url.hostname)
-        port = 443 if url.port is None else url.port
-        check(1 <= port <= 65535, "本站 HTTPS 端口无效。")
-        settings.extend(["GIFTLEDGER_SITE_IP=" + str(address), "GIFTLEDGER_HTTPS_PORT=" + str(port)])
+        address, port = site_endpoint(value)
+        settings.extend(["GIFTLEDGER_SITE_IP=" + address, "GIFTLEDGER_HTTPS_PORT=" + str(port)])
     prefix = "/usr/bin/env " + shlex.join(settings) + " " if settings else ""
     return prefix + '"$d" ' + shlex.join([*options, "-p", args.project, *arguments])
 
@@ -434,7 +441,8 @@ def sudo_command(command, purpose):
         prompt = f"需要管理员授权{purpose}。请核对输入法（英文密码选 ABC），输入服务器账号 %p 的密码并回车（不回显）："
         return "sudo -p " + shlex.quote(prompt) + " " + command
     # Keep the remote command ASCII across Plink code pages; the real sudo owns input.
-    prompt = f"\a【需要操作】{purpose}。请输入服务器管理员密码（输入不回显），然后按回车："
+    prompt = (f"\a【需要操作】{purpose}。请先核对输入法（英文密码请切到英文），"
+              "输入服务器账号 %p 的密码并回车（不回显）：")
     encoded_prompt = "".join(f"\\{byte:03o}" for byte in prompt.encode("utf-8"))
     return "sudo -p \"$(printf '" + encoded_prompt + "')\" " + command
 

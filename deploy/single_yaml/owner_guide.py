@@ -1,6 +1,9 @@
 """Render the public UTF-8 owner's notes. Data paths in this file are host paths."""
 
+import base64
+import json
 from pathlib import PurePosixPath
+import re
 from shlex import quote
 from textwrap import dedent
 from urllib.parse import urlsplit
@@ -73,14 +76,14 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
 项目 YAML    {config or '随“查看本站目录”一同显示。'}
 {fingerprint}
 
-服务器维护命令在群晖的 root 任务计划、root SSH 终端或 Ubuntu 上有 Docker 权限的终端执行。Mac 登记和恢复命令在 Mac 的站主工具目录执行。每段命令请连同括号一起复制。"""]
+服务器维护命令在群晖的 root 任务计划、root SSH 终端或 Ubuntu 上有 Docker 权限的终端执行。Mac 和 Windows 的登记、恢复命令请在对应的站主工具目录执行。多行命令请连同括号一起复制。"""]
     resolved = all((directory, station, config))
     get_dirs = 'printf "项目文件夹：%s\\nYAML：%s\\n站点文件夹：%s\\n" "$dir" "$cfg" "$station"'
     update = (compose + ' run --rm --no-deps -e GIFTLEDGER_PROJECT_DIR="$dir" '
               '-e GIFTLEDGER_SITE_DIR="$station" -e GIFTLEDGER_GUIDE_CONFIG_FILE="$cfg" prepare refresh-guide')
     if not resolved:
         paragraphs.append("查看本站目录\n请先在宿主机运行这段，读回项目实际使用的路径，并将其填入本说明。"
-                          "完成后重新打开文件，Mac 的登记和恢复命令也会一同补齐。\n" + block(get_dirs + "\n" + update))
+                          "完成后重新打开文件，Windows 和 Mac 的登记、恢复命令会一同补齐。\n" + block(get_dirs + "\n" + update))
     credentials = ("第一次密码用于 SSH 登录。若随后出现管理员授权提示，请先看菜单栏输入法；"
                    "英文密码选 ABC，输入同一服务器账号的密码，再按回车。终端输入密码时没有回显。")
 
@@ -91,10 +94,23 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
                 + f'--project-dir {quote(str(directory))} --project {quote(project)} '
                 + f'--compose-file {quote(str(config))} --site-dir {quote(str(station))} --site-url {quote(url)}\n)')
 
+    def windows_command(action):
+        paths = [str(directory), str(station), str(config)]
+        if all(re.fullmatch(r"[\w ./-]+", path) for path in paths):
+            layout = f'--project-dir "{directory}" --site-dir "{station}" --compose-file "{config}"'
+        else:
+            # PowerShell and cmd.exe both pass this token to the batch launcher
+            # literally, even for Unix paths containing quotes or %variables%.
+            encoded = base64.urlsafe_b64encode(json.dumps(paths, ensure_ascii=False).encode("utf-8")).decode("ascii")
+            layout = "--site-layout " + encoded
+        return f'.\\GiftLedger.cmd {action} --project {project} --site-url {url} {layout}'
+
     enrollment = ("第一次备份前登记钥匙\n从零建账的新站和用旧备份恢复的新站都可以选择“登记旧钥匙”或“生成新钥匙并登记”。\n"
                   "从同一发行版本下载站主工具。Windows 解压后双击 GiftLedger.cmd，选择登记钥匙。"
                   f"SSH 主机地址是 {address.hostname}，项目名是 {project}，项目文件夹见上方。")
     if resolved:
+        enrollment += ("\nWindows 请在解压好的站主工具目录打开 PowerShell，复制下面这一行。按提示输入服务器的 SSH 账号和端口。\n"
+                       + windows_command("enroll"))
         enrollment += ("\nMac 请在同版本的 Mac 站主工具目录运行下面这段命令，然后在工具里选择。\n"
                        "选“登记旧钥匙”时，请选取自己保管的 .agekey 原文件。\n"
                        "选“生成新钥匙并登记”时，请确认新文件的保存位置，保管好工具生成的 .agekey 原文件。\n"
@@ -102,7 +118,7 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
                        "\n如果钥匙文件已生成但登记中断，再次运行上面同一段命令，"
                        "选择“登记旧钥匙”，选取刚才生成的原文件即可继续登记。")
     else:
-        enrollment += "\nMac 先按上段“查看本站目录”操作，再打开本文件复制登记命令。"
+        enrollment += "\n先按上段“查看本站目录”操作，再打开本文件复制登记命令。"
     enrollment += "\n已经看到“本站备份钥匙登记通过”后，就可以运行手动备份。"
     paragraphs.append(enrollment)
     # Copy the DSM helper from the installed, read-only prepare image. A root
@@ -157,9 +173,11 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
     paragraphs.append("从本站备份恢复到另一站\n在独立的项目文件夹用独立项目名和其他 HTTPS 端口启动一个新站，保留空站状态。"
                       "打开新站 data/本站维护说明.txt，在它的“恢复到本站”一节操作。")
     recovery = (f"恢复到本站（目标 {project}，{url}/）\n仅在这里就是新建的空目标站时执行。"
-                "在 Mac 上打开同版站主工具目录，准备源站的五文件备份或 ZIP 与匹配的原钥匙。")
+                "在 Windows 或 Mac 打开同版站主工具目录，准备源站的五文件备份或 ZIP 与匹配的原钥匙。")
     if resolved:
-        recovery += ("运行下面这段，按提示拖入或选择备份、原钥匙。\n" + credentials + "\n" + mac_command("mac_restore.py"))
+        recovery += ("\nWindows 请在 PowerShell 运行下面这一行。目标站的 HTTPS 网址和端口已填好，工具会先核对该项目的 Web 端口映射。\n"
+                     + windows_command("restore") +
+                     "\nMac 请运行下面这段，按提示拖入或选择备份、原钥匙。\n" + credentials + "\n" + mac_command("mac_restore.py"))
     else:
         recovery += "先按“查看本站目录”操作，再打开本文件复制恢复命令。"
     paragraphs.append(recovery + f"\n确认框应显示备份来源、目标网址 {url}/ 和本站实例 {instance}。"

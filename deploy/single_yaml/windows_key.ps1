@@ -8,6 +8,7 @@ try {
             $dialog = New-Object System.Windows.Forms.SaveFileDialog
             $dialog.FileName = 'GiftLedger.agekey'
             $dialog.Filter = 'age key|*.agekey|All files|*.*'
+            $dialog.OverwritePrompt = $false  # The client requires an unused path.
         } else {
             $dialog = New-Object System.Windows.Forms.OpenFileDialog
             if ($Action -eq 'select-backup') {
@@ -16,11 +17,23 @@ try {
                 $dialog.Filter = 'age key|*.agekey;*.txt|All files|*.*'
             }
         }
+        # The PowerShell helper has no visible main window. Give the native
+        # dialog its own foreground owner while the console is waiting.
+        $owner = New-Object System.Windows.Forms.Form
+        $owner.ShowInTaskbar = $false
+        $owner.StartPosition = 'CenterScreen'
+        $owner.Opacity = 0
+        $owner.TopMost = $true
         try {
-            if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { exit 2 }
+            $owner.Show()
+            $owner.Activate()
+            if ($dialog.ShowDialog($owner) -ne [System.Windows.Forms.DialogResult]::OK) { exit 2 }
             [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
             [Console]::Write($dialog.FileName)
-        } finally { $dialog.Dispose() }
+        } finally {
+            $dialog.Dispose()
+            $owner.Dispose()
+        }
         exit 0
     }
 

@@ -87,6 +87,27 @@ def check_mounts(found, expected, temporary=()):
     ops.require(actual == expected, "single_yaml_mount_identity_mismatch")
 
 
+def check_web_endpoint(docker, web_id, ip, port, error_code):
+    configured, active, running = json.loads(docker.call(
+        "inspect", "--type", "container", "--format",
+        '[{{json .HostConfig.PortBindings}},{{json .NetworkSettings.Ports}},{{json .State.Running}}]',
+        web_id))
+
+    def matches(bindings):
+        return isinstance(bindings, list) and any(
+            isinstance(binding, dict) and binding.get("HostIp") in ("", "0.0.0.0", ip)
+            and binding.get("HostPort") == port for binding in bindings)
+
+    # DSM can omit the default TCP protocol in the saved mapping. A stopped
+    # Web has only that mapping; a running Web must also expose the TCP port.
+    configured = configured or {}
+    mappings = [configured[key] for key in ("443/tcp", "443/") if key in configured]
+    ops.require(mappings and all(matches(mapping) for mapping in mappings), error_code)
+    if running:
+        ops.require(matches((active or {}).get("443/tcp")), error_code)
+    return running
+
+
 def inspect_service(docker, project, role):
     ids = docker.call("ps", "-a", "--no-trunc",
                       "--filter", "label=com.docker.compose.project=" + project,

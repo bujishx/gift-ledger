@@ -220,6 +220,29 @@ class OwnerGuideTests(unittest.TestCase):
         self.assertNotIn("根证书 SHA-256", old)
         self.assertIn("本站公开证书.crt", old)
         self.assertNotIn("/volume1/docker", old)
+        self.assertNotIn(".\\GiftLedger.cmd ", old)
+
+    def test_windows_commands_preserve_each_exact_path_for_both_actions(self):
+        import windows_site
+
+        for directory, station, config in (
+            ("/srv/ledger files", "/srv/站点", "/srv/ledger files/custom.yml"),
+            (str(self.project_dir), str(self.station), str(self.config)),
+            ('/srv/weird"%VAR%!&', "/srv/站点", "/srv/config.yml"),
+        ):
+            notes = owner_guide.render(PROJECT, URL, IDENTITY, project_dir=directory, site_dir=station, config_file=config)
+            for action in ("enroll", "restore"):
+                with self.subTest(action=action, directory=directory):
+                    prefix = f".\\GiftLedger.cmd {action} --project {PROJECT} --site-url {URL} "
+                    lines = [line.removeprefix(prefix) for line in notes.splitlines() if line.startswith(prefix)]
+                    self.assertEqual(len(lines), 1)
+                    if directory == "/srv/ledger files":
+                        self.assertEqual(lines[0], f'--project-dir "{directory}" --site-dir "{station}" --compose-file "{config}"')
+                    else:
+                        option, encoded = lines[0].split()
+                        self.assertEqual(option, "--site-layout")
+                        self.assertRegex(encoded, r"^[A-Za-z0-9_=-]+$")
+                        self.assertEqual(windows_site.layout_paths(encoded), [directory, station, config])
 
 
 if __name__ == "__main__":

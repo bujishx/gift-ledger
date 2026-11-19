@@ -117,6 +117,9 @@ class Remote:
         options = ["run", "--rm", "-T", "--no-deps"]
         if incoming:
             options.extend(["-v", self.scratch + "/five:/work/incoming:ro"])
+        if arguments[0] == "restore" and getattr(self.args, "site_url", None):
+            host, port = keys.site_endpoint(self.args.site_url)
+            arguments = [*arguments, "--expect-web", host, str(port)]
         command = keys.compose_command(self.args, [*options, *arguments], default_file=True)
         if arguments[0] == "restore-files":
             purpose = "投放本次备份" if arguments[1] == "stage" else "清理本次临时文件"

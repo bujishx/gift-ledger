@@ -48,6 +48,8 @@ class WindowsTools(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(b"--host", result.stdout)
+        for option in (b"--site-url", b"--site-dir", b"--compose-file"):
+            self.assertIn(option, result.stdout)
 
     @unittest.skipUnless(os.name == "nt", "NTFS ACLs required")
     def test_generated_key_readback_and_refusal_of_shared_acl(self):
@@ -84,6 +86,20 @@ class WindowsTools(unittest.TestCase):
             client._show_ssh_output(reader, screen, host, 'siteowner')
         self.assertEqual(screen.getvalue().count('群晖 SSH 用户没有个人目录'), 1)
         self.assertTrue(screen.getvalue().endswith(other + prompt))
+
+    def test_windows_sudo_prompt_identifies_account_input_mode_and_no_echo(self):
+        import re
+        keys = self.client.keys
+        with mock.patch.object(os, "name", "nt"):
+            command = keys.sudo_command("true", "登记日常备份钥匙")
+        # Plink sends an ASCII command. The remote printf reconstructs the UTF-8 prompt for sudo.
+        octets = re.search(r"printf '((?:\\[0-7]{3})+)'", command).group(1)
+        prompt = bytes(int(part, 8) for part in octets.split("\\")[1:]).decode("utf-8")
+        self.assertIn("登记日常备份钥匙", prompt)
+        self.assertIn("核对输入法", prompt)
+        self.assertIn("英文", prompt)
+        self.assertIn("%p", prompt)
+        self.assertIn("不回显", prompt)
 
     def test_success_notice_identifies_the_verified_site_and_survives_dialog_failure(self):
         product = self.client.restore
@@ -176,14 +192,16 @@ class WindowsTools(unittest.TestCase):
         return probes, start
 
     def test_menu_accepts_ssh_host_and_nonstandard_port_after_bad_input(self):
-        args = SimpleNamespace(action=None, host=None, port=None, project_dir=None, project=None)
-        answers = ["2", "https://nas.example:8443", "owner@nas.example", "abc", "0", "65536", "2222",
+        args = SimpleNamespace(action=None, host=None, port=None, project_dir=None, project=None,
+                               site_url=None, site_dir=None, compose_file=None)
+        answers = ["2", "https://nas.example:8443", "https://192.0.2.20:9443/", "owner@nas.example", "abc", "0", "65536", "2222",
                    "/volume1/docker/ledger", "test-ledger"]
         with mock.patch("builtins.input", side_effect=answers) as prompts:
             self.client.request_site(args)
         self.assertEqual(prompts.call_count, len(answers))
         self.assertEqual((args.action, args.host, args.port), ("restore", "owner@nas.example", 2222))
         self.assertEqual((args.project_dir, args.project), ("/volume1/docker/ledger", "test-ledger"))
+        self.assertEqual(args.site_url, "https://192.0.2.20:9443/")
 
     def test_enrollment_menu_selects_new_or_existing_key_before_ssh(self):
         path = self.root / "backup.agekey"
@@ -207,7 +225,7 @@ class WindowsTools(unittest.TestCase):
                 custody.assert_called_once_with(path, generate, age)
 
     def test_restore_menu_requests_only_the_existing_key_for_the_backup(self):
-        answers = ["2", "owner@nas", "", "/volume1/docker/ledger", "ledger"]
+        answers = ["2", "https://192.0.2.20:9443/", "owner@nas", "", "/volume1/docker/ledger", "ledger"]
         backup = self.root / "old.zip"
         key = self.root / "original.agekey"
         with ExitStack() as stack:
@@ -229,16 +247,47 @@ class WindowsTools(unittest.TestCase):
 
     def test_default_ssh_port_and_explicit_port_never_prompt_batch_users(self):
         for action, port, answers, expected in [
-            (None, None, ["1", ""], 22), (None, 2222, ["2"], 2222),
+            (None, None, ["1", ""], 22), (None, 2222, ["2", "https://192.0.2.20:9443/"], 2222),
             ("restore", None, [], 22), ("enroll", 65535, [], 65535),
         ]:
             with self.subTest(action=action, port=port):
                 args = SimpleNamespace(action=action, host="owner@nas", port=port,
-                                       project_dir="/srv/site", project="ledger")
+                                       project_dir="/srv/site", project="ledger", site_url=None,
+                                       site_dir=None, compose_file=None)
                 with mock.patch("builtins.input", side_effect=answers) as prompts:
                     self.client.request_site(args)
                 self.assertEqual(prompts.call_count, len(answers))
                 self.assertEqual(args.port, expected)
+
+    def test_restore_menu_requires_target_url_before_connecting_or_choosing_a_backup(self):
+        with mock.patch.object(sys, "argv", ["GiftLedger.cmd"]), \
+             mock.patch.object(self.client, "os", SimpleNamespace(name="nt")), \
+             mock.patch("builtins.input", side_effect=["2", ""]), \
+             mock.patch.object(self.client, "choose") as choose, mock.patch.object(self.client, "session") as ssh, \
+             self.assertRaisesRegex(self.client.keys.EnrollmentError, "已退出"):
+            self.client.main()
+        choose.assert_not_called()
+        ssh.assert_not_called()
+
+    def test_windows_guide_command_passes_site_paths_and_expected_port_to_remote_status(self):
+        args = ["GiftLedger.cmd", "restore", "--project", "test-ledger", "--site-url", "https://192.0.2.20:9443/",
+                "--project-dir", "/srv/project files", "--site-dir", "/srv/station", "--compose-file", "/srv/custom.yml",
+                "--backup", "fixture.zip"]
+        with mock.patch.object(sys, "argv", args), mock.patch.object(self.client, "os", SimpleNamespace(name="nt")), \
+             mock.patch("builtins.input", side_effect=["operator", "2222"]) as prompts, \
+             mock.patch.object(self.client, "preserve_console_input_mode"), \
+             mock.patch.object(self.client.restore, "restore_selected", return_value=None) as run:
+            self.client.main()
+        self.assertEqual(prompts.call_count, 2)
+        options = run.call_args.args[0]
+        self.assertEqual((options.host, options.port), ("operator@192.0.2.20", 2222))
+        remote = self.client.restore.Remote([], options, "/tmp/gl-fixture")
+        status = remote.compose_script(["restore", "1" * 32, "--status"], output="/tmp/receipt")
+        self.assertIn("--project-directory '/srv/project files' -f /srv/custom.yml -p test-ledger", status)
+        self.assertIn("GIFTLEDGER_SITE_DIR=/srv/station", status)
+        self.assertIn("--status --expect-web 192.0.2.20 9443", status)
+        stage = remote.compose_script(["restore-files", "stage"], output="/tmp/receipt")
+        self.assertNotIn("--expect-web", stage)
 
     def test_slow_login_waits_for_a_working_channel_and_leaves_stdin_to_the_owner(self):
         ok = subprocess.CompletedProcess([], 0)
@@ -317,6 +366,70 @@ class WindowsTools(unittest.TestCase):
         self.assertIn("rmdir", commands.call_args_list[2].args[2])
         worker.kill.assert_called_once_with()
         self.assertEqual(worker.wait.call_args_list, [mock.call(timeout=5), mock.call()])
+
+    def test_closed_backup_picker_accepts_quoted_zip_manifest_or_directory(self):
+        folder = self.root / "备份 副本"
+        folder.mkdir()
+        manifest = folder / "BUNDLE.json"
+        manifest.touch()
+        archive = self.root / "下载 备份.ZIP"
+        archive.touch()
+        for path, expected in ((archive, archive), (manifest, folder), (folder, folder)):
+            with self.subTest(path=path), ExitStack() as stack:
+                patch = stack.enter_context
+                patch(mock.patch.object(self.client, "system_directory", return_value=self.root))
+                spawn = patch(mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 2, b"")))
+                patch(mock.patch.object(sys, "stdin", **{"isatty.return_value": True}))
+                answer = patch(mock.patch("builtins.input", return_value=f'"{path}"'))
+                self.assertEqual(self.client.choose("select-backup"), expected)
+                self.assertIn("文件窗口已关闭", answer.call_args.args[0])
+                self.assertEqual(spawn.call_count, 1)
+
+    def test_failed_key_picker_can_reopen_then_paste_after_another_cancel(self):
+        key = self.root / "之前保管的 钥匙.agekey"
+        key.touch()
+        results = [subprocess.CompletedProcess([], 1, b""), subprocess.CompletedProcess([], 2, b"")]
+        with mock.patch.object(self.client, "system_directory", return_value=self.root), \
+                mock.patch.object(subprocess, "run", side_effect=results) as picker, \
+                mock.patch.object(sys, "stdin", **{"isatty.return_value": True}), \
+                mock.patch("builtins.input", side_effect=["", str(self.root / "missing"), f'"{key}"']) as answer:
+            self.assertEqual(self.client.choose("select-key"), key)
+        prompts = [call.args[0] for call in answer.call_args_list]
+        self.assertIn("未能打开文件窗口", prompts[0])
+        self.assertIn("回车重新打开窗口", prompts[0])
+        self.assertIn("文件窗口已关闭", prompts[1])
+        self.assertIn("找不到这份已有钥匙", prompts[2])
+        self.assertEqual(picker.call_count, 2)
+
+    def test_new_key_picker_rejects_occupied_paths_and_accepts_a_new_filename(self):
+        old = self.root / "已有 钥匙.agekey"
+        old.write_bytes(b"existing")
+        new = self.root / "新 钥匙.agekey"
+        answers = [str(self.root / "missing" / new.name), f'"{new}"']
+        with mock.patch.object(self.client, "key_helper", return_value=str(old).encode("utf-8")) as picker, \
+                mock.patch.object(sys, "stdin", **{"isatty.return_value": True}), \
+                mock.patch("builtins.input", side_effect=answers) as answer:
+            self.assertEqual(self.client.choose("select-new"), new)
+        self.assertIn("已有文件", answer.call_args_list[0].args[0])
+        self.assertIn("找不到保存新钥匙的文件夹", answer.call_args_list[1].args[0])
+        self.assertEqual(old.read_bytes(), b"existing")
+        self.assertFalse(new.exists())
+        picker.assert_called_once_with("select-new")
+
+    def test_picker_retry_offers_a_deliberate_exit_and_batch_flag(self):
+        for action, flag in (("select-backup", "--backup"), ("select-key", "--key"), ("select-new", "--generate")):
+            with self.subTest(action=action), ExitStack() as stack:
+                patch = stack.enter_context
+                patch(mock.patch.object(self.client, "key_helper", side_effect=FileNotFoundError))
+                stdin = patch(mock.patch.object(sys, "stdin", **{"isatty.return_value": True}))
+                answer = patch(mock.patch("builtins.input", return_value="Q"))
+                with self.assertRaisesRegex(self.client.keys.EnrollmentError, "已退出文件选择"):
+                    self.client.choose(action)
+                self.assertIn("输入 q 退出", answer.call_args.args[0])
+                stdin.isatty.return_value = False
+                with self.assertRaisesRegex(self.client.keys.EnrollmentError, flag):
+                    self.client.choose(action)
+                answer.assert_called_once()
 
 
 if __name__ == "__main__":

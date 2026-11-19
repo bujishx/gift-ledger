@@ -1,5 +1,6 @@
 """Windows 站主工具：为 Ubuntu 或群晖站点登记备份钥匙，或将账本恢复到独立空站。"""
 import argparse
+import base64
 from contextlib import contextmanager
 import ctypes
 import hashlib
@@ -64,19 +65,61 @@ def key_helper(action, path=None, data=None):
     result = subprocess.run([str(powershell), "-NoProfile", "-NonInteractive", "-STA", "-Command",
                              "& {\n" + script + "\n} " + action], env=environment,
                             input=data or b"", capture_output=True)
-    keys.check(result.returncode != 2, "已取消选择。")
+    if action.startswith("select-"):
+        if result.returncode == 2:
+            return b""
+        keys.check(result.returncode == 0, "未能打开文件窗口。")
+        return result.stdout
     keys.check(result.returncode == 0, "文件操作未完成。请选择本机或直连盘上的私有钥匙文件。"
                "在“属性 → 安全”中，只给本人、SYSTEM 或管理员访问权限；生成新钥匙请选新文件名。")
     return result.stdout
 
 
-def choose(action):
-    selected = key_helper(action).decode("utf-8").strip()
-    keys.check(selected, "已取消选择。")
-    path = Path(selected)
-    if action == "select-backup" and path.name.casefold() == "bundle.json":
-        return path.parent
+def selected_path(action, value):
+    # Explorer may wrap a dragged path in quotes. Keep spaces and backslashes literal.
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        value = value[1:-1]
+    keys.check(value, "路径为空。")
+    try:
+        path = Path(value).expanduser()
+    except RuntimeError:
+        raise keys.EnrollmentError("无法识别这个路径，请粘贴完整路径。") from None
+    if action == "select-backup":
+        if path.is_dir():
+            keys.check((path / "BUNDLE.json").is_file(), "这个目录里没有 BUNDLE.json。")
+        else:
+            keys.check(path.is_file(), "找不到这个备份文件。")
+            if path.name.casefold() == "bundle.json":
+                return path.parent
+            keys.check(path.suffix.casefold() == ".zip", "请选择备份 ZIP、BUNDLE.json 或五文件目录。")
+    elif action == "select-new":
+        keys.check(not os.path.lexists(path), "这个位置已有文件，请换一个新钥匙文件名。")
+        keys.check(path.parent.is_dir(), "找不到保存新钥匙的文件夹。")
+    else:
+        keys.check(path.is_file(), "找不到这份已有钥匙文件。")
     return path
+
+
+def choose(action):
+    label, option = {
+        "select-backup": ("备份 ZIP、BUNDLE.json 或五文件目录", "--backup"),
+        "select-key": ("已有钥匙文件", "--key"),
+        "select-new": ("新钥匙的保存路径（含文件名）", "--generate"),
+    }[action]
+    value = ""
+    while True:
+        try:
+            if not value:
+                value = key_helper(action).decode("utf-8").strip()
+                keys.check(value, "文件窗口已关闭。")
+            return selected_path(action, value)
+        except keys.EnrollmentError as error:
+            message = str(error)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            message = "未能打开文件窗口或读取所选路径。"
+        keys.check(sys.stdin.isatty(), f"{message}可用 {option} 指定完整路径。")
+        value = keys.read_selection(f"{message}\n可拖入或粘贴{label}，回车重新打开窗口，输入 q 退出：")
+        keys.check(value.casefold() != "q", "已退出文件选择。")
 
 
 def custody(path, generate, age):
@@ -146,7 +189,8 @@ def session(host, port):
     try:
         shared = probe("-shareexists", host)
         if not shared:
-            print("请在新打开的 SSH 窗口核对指纹并登录。如提示 Press Return，按一次回车。"
+            print(f"正在通过 SSH 登录 {host}。请在新窗口核对主机指纹。如需密码，输入该服务器账号的密码并回车（不回显）。"
+                  "如提示 Press Return，按一次回车。"
                   "登录后保持 SSH 窗口打开，回到本窗口继续操作。", flush=True)
             master = subprocess.Popen([*options, "-N", host], creationflags=subprocess.CREATE_NEW_CONSOLE)
         deadline = time.monotonic() + 240
@@ -170,15 +214,32 @@ def request_site(args):
         choice = input("1 登记日常备份钥匙\n2 从备份恢复到独立空站\n请选择：").strip()
         keys.check(choice in ("1", "2"), "已退出。")
         args.action = "enroll" if choice == "1" else "restore"
-        print("先填写服务器的 SSH 登录信息。恢复确认时会显示目标站自己的 HTTPS 网址。")
+        print("请准备服务器的 SSH 登录信息。恢复时还需要目标站 data/网站地址.txt 里的完整网址。")
+    if args.action == "restore" and not args.site_url and (menu or not any((args.host, args.project_dir, args.project))):
+        while True:
+            value = input("粘贴这个站的完整 HTTPS 网址（直接回车退出）：").strip()
+            keys.check(value, "已退出。")
+            try:
+                keys.site_endpoint(value)
+            except keys.EnrollmentError as exc:
+                print(exc)
+                continue
+            args.site_url = value
+            break
+    address = keys.site_endpoint(args.site_url)[0] if args.site_url else None
+    prompt_port = menu or (address and not args.host)
     if not args.host:
         while True:
-            host = input("SSH 登录地址（用户名@主机，例如 admin@192.168.1.20）：").strip()
+            if address:
+                login = input(f"SSH 登录账号（本站 {address}，也可输入 用户名@SSH主机）：").strip()
+                host = login if "@" in login else login + "@" + address
+            else:
+                host = input("SSH 登录地址（用户名@主机，例如 admin@192.168.1.20）：").strip()
             if keys.SSH_HOST.fullmatch(host):
                 args.host = host
                 break
             print("请填写服务器的 SSH 主机名或 IP，可在前面加上用户名@。网站网址和端口请勿填在这里。")
-    if args.port is None and menu:
+    if args.port is None and prompt_port:
         while True:
             value = input("服务器 SSH 端口 [22]：").strip() or "22"
             try:
@@ -195,6 +256,21 @@ def request_site(args):
     args.project_dir = args.project_dir or input("服务器上的 YAML 文件夹（绝对路径）：").strip()
     args.project = args.project or input("站点项目名称 [gift-ledger]：").strip() or "gift-ledger"
     keys.remote_args(args.host, args.project_dir, args.project)
+    for path in (args.compose_file, args.site_dir):
+        if path:
+            keys.remote_args(args.host, path, args.project)
+
+
+def layout_paths(encoded):
+    # A batch launcher can reinterpret %, ! or quotes even inside arguments.
+    # The site guide uses one data-only argument for paths containing shell syntax.
+    try:
+        paths = json.loads(base64.b64decode(encoded, altchars=b'-_', validate=True).decode("utf-8"))
+        if isinstance(paths, list) and len(paths) == 3 and all(isinstance(p, str) and p for p in paths):
+            return paths
+    except (ValueError, UnicodeError):
+        pass
+    raise argparse.ArgumentTypeError("请重新复制本站维护说明里的 Windows 命令。")
 
 
 def main():
@@ -204,6 +280,8 @@ def main():
     parser.add_argument("--port", type=int, help="服务器 SSH 端口（默认 22）")
     parser.add_argument("--project-dir", help="服务器上 YAML 所在的绝对路径")
     parser.add_argument("--project", help="Compose 或 Container Manager 中的项目名称")
+    keys.add_site_options(parser)
+    parser.add_argument("--site-layout", type=layout_paths, help=argparse.SUPPRESS)
     parser.add_argument("--backup", type=Path, help="五文件备份目录或 ZIP")
     parser.add_argument("--result-file", type=Path, help="将核验通过的恢复结果写入新的本机 JSON 文件")
     key = parser.add_mutually_exclusive_group()
@@ -211,6 +289,9 @@ def main():
     key.add_argument("--generate", type=Path, help="保存新钥的文件路径（首次登记）")
     args = parser.parse_args()
     keys.check(os.name == "nt", "请从 Windows 电脑运行此入口。")
+    if args.site_layout:
+        keys.check(not any((args.project_dir, args.site_dir, args.compose_file)), "请只使用一份本站路径。")
+        args.project_dir, args.site_dir, args.compose_file = args.site_layout
     request_site(args)
     if args.action == "restore":
         keys.check(not args.generate, "恢复需要该备份对应的原钥匙。")
@@ -247,7 +328,7 @@ def main():
     secret, recipient = custody(path, bool(args.generate), age)
     args.restore_key = False
     with session(args.host, args.port) as channel:
-        print("正在登记本站备份钥匙；若出现 sudo 密码提示，请在本窗口输入。", flush=True)
+        print("正在登记本站备份钥匙。若服务器要求管理员授权，请按本窗口的提示输入密码。", flush=True)
         try:
             receipt = keys.exchange(channel, args, secret, recipient, age)
         except subprocess.TimeoutExpired as error:

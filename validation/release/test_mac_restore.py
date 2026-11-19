@@ -1,6 +1,7 @@
 """Mac owner key enrollment, recovery decisions, re-entry, and streamed file transport."""
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import shlex
@@ -201,7 +202,7 @@ class MacRecoveryTests(unittest.TestCase):
     def test_site_guide_options_select_existing_yaml_and_data_and_match_receipt(self):
         self.args.compose_file = "/data/演练 '一'/站点.yml"
         self.args.site_dir = "/data/两 个目录/站点"
-        self.args.site_url = TARGET["url"]
+        self.args.site_url = TARGET["url"].replace("https://", "HTTPS://")
         command = shlex.split(client.keys.compose_command(self.args, ["run", "--rm", "backup-key"]))
         self.assertIn("GIFTLEDGER_SITE_DIR=" + self.args.site_dir, command)
         self.assertIn("GIFTLEDGER_HTTPS_PORT=28443", command)
@@ -212,6 +213,38 @@ class MacRecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(client.keys.EnrollmentError, "网址"):
             self.run_flow()
         self.assertNotIn(("--operation", OP), self.site.log)
+
+    @unittest.skipUnless(os.name == "posix", "Linux maintenance service")
+    def test_restore_status_binds_supplied_url_to_the_projects_actual_https_mapping(self):
+        root = Path(__file__).resolve().parents[2]
+        with mock.patch.object(sys, "path", [str(root / "deploy/release/backup_ops"), *sys.path]):
+            import restore_site
+        ip = "192.0.2.20"
+        actual = [{"HostIp": ip, "HostPort": "16447"}]
+        other = [{"HostIp": ip, "HostPort": "26443"}]
+        profile = {"containers": {"web": {"id": "fixture-web"}}}
+        for wanted_ip, wanted_port, runtime, running, should_match in (
+            (ip, "26443", actual, True, False), ("192.0.2.21", "16447", actual, True, False),
+            (ip, "16447", other, True, False), (ip, "16447", actual, True, True),
+            (ip, "16447", None, False, True),
+        ):
+            with self.subTest(ip=wanted_ip, port=wanted_port, runtime=runtime, running=running), \
+                 mock.patch.dict(os.environ, {"GIFTLEDGER_PROJECT": "fixture", "GIFTLEDGER_SITE_IP": wanted_ip,
+                                              "GIFTLEDGER_HTTPS_PORT": wanted_port}), \
+                 mock.patch.object(restore_site.site, "SiteBindings") as bindings, \
+                 mock.patch.object(restore_site.ops, "Docker") as docker, \
+                 mock.patch.object(restore_site, "restore_status", return_value={"stage": "none"}) as status:
+                bindings.return_value.runtime_profile.return_value = profile
+                docker.return_value.call.return_value = json.dumps([{"443/": actual}, {"443/tcp": runtime}, running])
+                if should_match:
+                    self.assertEqual(restore_site.restore(ID, "restore_identity", status=True,
+                                                          expected_web=(wanted_ip, wanted_port)), {"stage": "none"})
+                    status.assert_called_once()
+                else:
+                    with self.assertRaisesRegex(restore_site.ops.BackupOpsError, "restore_site_port_mismatch"):
+                        restore_site.restore(ID, "restore_identity", status=True, expected_web=(wanted_ip, wanted_port))
+                    status.assert_not_called()
+                self.assertEqual(docker.return_value.call.call_args.args[-1], "fixture-web")
 
     def test_cancel_binds_preflight_then_retires_managed_input(self):
         self.ask.return_value = False

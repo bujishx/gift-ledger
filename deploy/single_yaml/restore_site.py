@@ -133,7 +133,7 @@ def restore_status(profile, journal, backup_id):
     return result
 
 
-def restore(backup_id, identity_role, *, check_only=False, cancel=False, status=False, operation=None):
+def restore(backup_id, identity_role, *, check_only=False, cancel=False, status=False, operation=None, expected_web=None):
     require(ops.ID.fullmatch(backup_id) and identity_role in ("backup_identity", "restore_identity"),
             "restore_arguments_invalid")
     project = os.environ["GIFTLEDGER_PROJECT"]
@@ -141,6 +141,8 @@ def restore(backup_id, identity_role, *, check_only=False, cancel=False, status=
     docker = ops.Docker("/usr/bin/docker", "unix:///var/run/docker.sock")
     bindings = site.SiteBindings(docker, project, service="restore")
     profile = bindings.runtime_profile()
+    if expected_web:
+        site.check_web_endpoint(docker, profile["containers"]["web"]["id"], *expected_web, "restore_site_port_mismatch")
     journal = site.STATE / "restore.json"
     if status:
         return restore_status(profile, journal, backup_id)
@@ -250,16 +252,21 @@ if __name__ == "__main__":
         parser.add_argument("backup_id")
         parser.add_argument("--use-site-key", action="store_true")
         parser.add_argument("--operation", help="仅继续已核对的这一次操作")
+        parser.add_argument("--expect-web", nargs=2, metavar=("IP", "PORT"), help="核对目标 Web 容器实际发布的 HTTPS 地址和端口")
         intention = parser.add_mutually_exclusive_group()
         intention.add_argument("--check-only", action="store_true")
         intention.add_argument("--cancel", action="store_true")
         intention.add_argument("--status", action="store_true")
         args = parser.parse_args()
         result = restore(args.backup_id, "backup_identity" if args.use_site_key else "restore_identity",
-                         check_only=args.check_only, cancel=args.cancel, status=args.status, operation=args.operation)
+                         check_only=args.check_only, cancel=args.cancel, status=args.status, operation=args.operation,
+                         expected_web=args.expect_web)
         print(json.dumps(result, ensure_ascii=False))
     except Exception as exc:
         code = getattr(exc, "code", None)
+        if code == "restore_site_port_mismatch":
+            print("目标项目实际发布的 HTTPS 地址或端口与预期不符。请核对目标站的网站地址.txt、项目名和 Web 端口映射。",
+                  file=sys.stderr)
         print("恢复任务未完成：" + (code if isinstance(code, str) and re.fullmatch(r"[a-z0-9_-]{1,100}", code)
                                 else "restore_environment_invalid"), file=sys.stderr)
         sys.exit(1)
