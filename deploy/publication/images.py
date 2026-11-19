@@ -340,19 +340,19 @@ def verify(out, commit):
     return candidate["images"]
 
 
-def release_files(out, refs, repository, version):
-    out.mkdir(parents=True, exist_ok=False)
-    yaml = f"# {version} · Linux/amd64\n" + render(refs).replace(
-        "单文件安装候选版", "单文件安装", 1
-    )
-    (out / "docker-compose.yml").write_text(yaml)
-    with zipfile.ZipFile(
-        out / "mac-site-tools.zip", "x", compression=zipfile.ZIP_DEFLATED
-    ) as z:
+def has_windows_tools():
+    # The v1.5.0 source predates the Windows entry point. Rebuilding its
+    # previously published attachments must preserve the four original assets.
+    return (ROOT / "deploy/single_yaml/windows_site.py").is_file()
+
+
+def write_site_tools_zip(path, yaml_bytes, *, windows=False):
+    with zipfile.ZipFile(path, "x", compression=zipfile.ZIP_DEFLATED) as z:
 
         def member(name, data):
             entry = zipfile.ZipInfo(name, date_time=(2000, 1, 1, 0, 0, 0))
             entry.compress_type = zipfile.ZIP_DEFLATED
+            entry.create_system = 3
             entry.external_attr = 0o100644 << 16
             z.writestr(entry, data)
 
@@ -362,7 +362,25 @@ def release_files(out, refs, repository, version):
             member(name, selected_file(Path("deploy/release/backup_ops") / name))
         for guide in ("从备份恢复.md", "站主找回账号.md", "站主升级.md"):
             member(guide, selected_file(Path("docs") / guide))
-        member("docker-compose.yml", yaml.encode())
+        if windows:
+            for name in ("windows_site.py", "windows_key.ps1", "GiftLedger.cmd"):
+                data = selected_file(Path("deploy/single_yaml") / name)
+                if name.endswith(".cmd"):
+                    data = b"\r\n".join(data.splitlines()) + b"\r\n"
+                member(name, data)
+        member("docker-compose.yml", yaml_bytes)
+
+
+def release_files(out, refs, repository, version):
+    out.mkdir(parents=True, exist_ok=False)
+    yaml = f"# {version} · Linux/amd64\n" + render(refs).replace(
+        "单文件安装候选版", "单文件安装", 1
+    )
+    yaml_bytes = yaml.encode()
+    (out / "docker-compose.yml").write_bytes(yaml_bytes)
+    write_site_tools_zip(out / "mac-site-tools.zip", yaml_bytes)
+    if has_windows_tools():
+        write_site_tools_zip(out / "windows-site-tools.zip", yaml_bytes, windows=True)
     for lang in ("zh", "en"):
         page = (
             selected_file(f"deploy/publication/README.{lang}.md")
@@ -379,7 +397,7 @@ def release_files(out, refs, repository, version):
         page = page.replace(
             "](docs/", f"](https://github.com/{repository}/blob/{version}/docs/"
         )
-        (out / f"Install.{lang}.md").write_text(page)
+        (out / f"Install.{lang}.md").write_bytes(page.encode())
 
 
 def publish(out, commit, namespace, version):

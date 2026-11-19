@@ -145,6 +145,7 @@ def restore(backup_id, identity_role, *, check_only=False, cancel=False, status=
     if status:
         return restore_status(profile, journal, backup_id)
     with ops.host_lock(site.STATE), pin_restore_inputs(site.RESTORE_INPUT):
+        site.check_certificate_idle()
         pending = [r for _, r in ops.run_records(site.STATE)
                    if r["stage"] not in ("finished", "preflight-failed") or r.get("private_cleanup_pending")]
         require(not pending, "unfinished_backup_blocks_restore")

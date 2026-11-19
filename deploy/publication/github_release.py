@@ -8,9 +8,12 @@ from pathlib import Path
 import re
 import subprocess
 
+from images import has_windows_tools
+
 EXPECTED = {
     "docker-compose.yml",
     "mac-site-tools.zip",
+    "windows-site-tools.zip",
     "Install.en.md",
     "Install.zh.md",
 }
@@ -85,7 +88,8 @@ def deliver(service, version, commit, folder):
     ) or not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Invalid release identity")
     files = {p.name: p for p in folder.iterdir() if p.is_file() and not p.is_symlink()}
-    if set(files) != EXPECTED or len(list(folder.iterdir())) != len(EXPECTED):
+    expected = EXPECTED if has_windows_tools() else EXPECTED - {"windows-site-tools.zip"}
+    if set(files) != expected or len(list(folder.iterdir())) != len(expected):
         raise ValueError("Unexpected release assets")
     base = f"https://github.com/{service.repository}/releases/download/{version}/"
     metadata = {
@@ -128,19 +132,19 @@ def deliver(service, version, commit, folder):
 
     current, stubs = inspect(release)
     if not release["draft"]:
-        if current != EXPECTED:
+        if current != expected:
             raise ValueError("Published release has missing assets")
         return
     for asset in stubs:
         service.clear_incomplete(asset)
-    for missing in sorted(EXPECTED - current):
+    for missing in sorted(expected - current):
         service.upload(version, files[missing])
     reread = service.get(release["id"])
-    if not reread["draft"] or inspect(reread) != (EXPECTED, []):
+    if not reread["draft"] or inspect(reread) != (expected, []):
         raise ValueError("Draft readback incomplete")
     service.publish(release["id"])
     final = service.get(release["id"])
-    if final["draft"] or inspect(final) != (EXPECTED, []):
+    if final["draft"] or inspect(final) != (expected, []):
         raise ValueError("Published release readback incomplete")
 
 

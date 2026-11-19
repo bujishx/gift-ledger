@@ -1325,6 +1325,7 @@ def verify_archived_site_ca(leaf, root_pem, identity, archived_at):
     root_ext = root.extensions.get_extension_for_class
     leaf_ext = leaf.extensions.get_extension_for_class
     begin, end = leaf.not_valid_before_utc, leaf.not_valid_after_utc
+    lifetime = end - begin
     issued_to = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "GiftLedger Site CA " + identity["instance_id"])])
     scope = x509.NameConstraints([x509.IPAddress(ipaddress.ip_network(f"{ip}/32"))], None)
     require(
@@ -1340,9 +1341,9 @@ def verify_archived_site_ca(leaf, root_pem, identity, archived_at):
         and leaf_ext(x509.ExtendedKeyUsage).value == x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH])
         and leaf_ext(x509.SubjectAlternativeName).value == x509.SubjectAlternativeName([x509.IPAddress(ip)])
         and root.not_valid_before_utc <= begin and end <= root.not_valid_after_utc
-        and moment < end and end - begin == timedelta(days=90)
+        and moment < end and lifetime in (timedelta(days=90), timedelta(days=365))
         and tls == {
-            "profile": "site-ca-v1", "host": str(ip), "validity_days": 90,
+            "profile": "site-ca-v1", "host": str(ip), "validity_days": lifetime.days,
             "not_before": begin.isoformat(timespec="seconds"), "not_after": end.isoformat(timespec="seconds"),
             "certificate_sha256": leaf.fingerprint(hashes.SHA256()).hex(),
             "root_sha256": root.fingerprint(hashes.SHA256()).hex(),

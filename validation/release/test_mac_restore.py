@@ -1,8 +1,9 @@
-"""Mac owner recovery decisions, re-entry, and streamed file transport. No NAS or Docker."""
+"""Mac owner key enrollment, recovery decisions, re-entry, and streamed file transport."""
 
 import hashlib
 import os
 from pathlib import Path
+import shlex
 import shutil
 import sys
 import tempfile
@@ -24,6 +25,115 @@ SOURCE = {"source_project": "old", "source_instance_id": "b26de830-f363-4c54-9ad
 TARGET = {"project": "new", "instance_id": "ed76be70-a951-4d66-a0bb-12a8ab22cf49",
           "server_uuid": "c48d6e46-2995-4a32-bfff-e70b53dd55ba", "url": "https://192.168.10.6:28443/"}
 FILES = ("BUNDLE.json", "SHA256SUMS", "backup.json", "verify.json", f"backup-{ID}.glgui.age")
+
+
+class MacPickerTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "第二份 备份.zip"
+        self.path.touch()
+        tty = mock.patch.object(sys.stdin, "isatty", return_value=True)
+        tty.start()
+        self.addCleanup(tty.stop)
+
+    def test_paste_quote_and_finder_drag_preserve_the_selected_path(self):
+        for value in [str(self.path), shlex.quote(str(self.path)), str(self.path).replace(" ", r"\ ")]:
+            with self.subTest(value=value), mock.patch("builtins.input", return_value=value), \
+                 mock.patch.object(client.keys.subprocess, "run") as window:
+                self.assertEqual(client.choose_bundle(), self.path)
+                window.assert_not_called()
+
+    def test_foreground_file_and_directory_dialogs(self):
+        for key, path, command in [("", self.path, "choose file"), ("d", self.path.parent, "choose folder")]:
+            result = SimpleNamespace(returncode=0, stdout=os.fsencode(path) + b"\n")
+            with mock.patch("builtins.input", return_value=key), \
+                 mock.patch.object(client.keys.subprocess, "run", return_value=result) as window:
+                self.assertEqual(client.choose_bundle(), path)
+                script = window.call_args.args[0][-1]
+                self.assertIn("activate", script)
+                self.assertIn(command, script)
+
+    def test_empty_or_failed_window_can_continue_without_restarting(self):
+        for code in (0, 1):
+            result = SimpleNamespace(returncode=code, stdout=b"")
+            with mock.patch("builtins.input", side_effect=["", str(self.path)]), \
+                 mock.patch.object(client.keys.subprocess, "run", return_value=result):
+                self.assertEqual(client.keys.choose_key(), self.path)
+
+    def test_cancel_and_missing_path_do_not_start_restore(self):
+        for value in ("q", str(self.path) + ".missing"):
+            with mock.patch("builtins.input", return_value=value), self.assertRaises(client.keys.EnrollmentError):
+                client.choose_bundle()
+
+
+class MacEnrollmentTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        self.argv = ["mac_backup_key.py", "--host", "owner@192.0.2.20", "--project-dir", "/site",
+                     "--project", "gift-test"]
+        self.default = self.home / "gift-test-backup.agekey"
+        self.age = self.enter_patch(mock.patch.object(client.keys, "Age"))
+        self.custody = self.enter_patch(mock.patch.object(client.keys, "custody",
+                                             return_value=(b"original", "recipient")))
+        self.session = self.enter_patch(mock.patch.object(client.keys, "session"))
+        self.exchange = self.enter_patch(mock.patch.object(client.keys, "exchange", return_value={
+            "project": "gift-test", "instance_id": TARGET["instance_id"]}))
+        self.enter_patch(mock.patch.object(Path, "home", return_value=self.home))
+        self.enter_patch(mock.patch.object(sys.stdin, "isatty", return_value=True))
+
+    def enter_patch(self, patcher):
+        value = patcher.start()
+        self.addCleanup(patcher.stop)
+        return value
+
+    def invoke(self, choices=(), *args):
+        with mock.patch.object(sys, "argv", [*self.argv, *args]), \
+                mock.patch("builtins.input", side_effect=choices) as prompts:
+            client.keys.main()
+        return [call.args[0] for call in prompts.call_args_list]
+
+    def test_menu_registers_selected_existing_file_or_generates_at_confirmed_path(self):
+        old = self.home / "已有 钥匙.agekey"
+        old.touch()
+        for choices, path, generate in ((["2", str(old)], old, False),
+                                        (["1", ""], self.default, True),
+                                        (["1", "我的 新钥匙.agekey"], self.home / "我的 新钥匙.agekey", True)):
+            with self.subTest(choices=choices):
+                prompts = self.invoke(choices)
+                self.assertIn("1 生成新钥匙并登记", prompts[0].splitlines())
+                self.assertIn("2 登记旧钥匙", prompts[0].splitlines())
+                self.custody.assert_called_with(path, generate, self.age.return_value)
+                self.assertEqual(self.exchange.call_args.args[2:], (b"original", "recipient", self.age.return_value))
+
+    def test_existing_destination_is_preserved_and_another_name_can_be_selected(self):
+        self.default.write_bytes(b"original key")
+        replacement = self.home / "other.agekey"
+        self.invoke(["1", "", str(self.home / "missing" / "key"), str(replacement)])
+        self.custody.assert_called_once_with(replacement, True, self.age.return_value)
+        self.assertEqual(self.default.read_bytes(), b"original key")
+
+    def test_cancellation_and_invalid_choices_never_generate_or_start_ssh(self):
+        for choices in ([""], ["q"], ["x"], ["1", "q"], ["2", "q"], [EOFError()]):
+            with self.subTest(choices=choices), self.assertRaises(client.keys.EnrollmentError):
+                self.invoke(choices)
+        self.age.assert_not_called()
+        self.custody.assert_not_called()
+        self.session.assert_not_called()
+
+    def test_explicit_flags_bypass_menu_and_restore_only_accepts_original_key(self):
+        for flag, generate in (("--key", False), ("--generate", True)):
+            self.assertEqual(self.invoke([], flag, str(self.default)), [])
+            self.custody.assert_called_with(self.default, generate, self.age.return_value)
+        self.default.touch()
+        prompts = self.invoke([str(self.default)], "--restore-key")
+        self.assertEqual(len(prompts), 1)
+        self.assertNotIn("生成新钥匙", prompts[0])
+        self.custody.assert_called_with(self.default, False, self.age.return_value)
+        with self.assertRaisesRegex(client.keys.EnrollmentError, "恢复须选择"):
+            self.invoke([], "--restore-key", "--generate", str(self.default))
 
 
 class FakeSite:
@@ -67,7 +177,11 @@ class MacRecoveryTests(unittest.TestCase):
         self.ask = mock.Mock(return_value=True)
 
     def run_flow(self):
-        return client.recover(self.b, self.args, self.site, self.enroll, self.ask)
+        def finish(remote, bundle, operation, verify, announce, retired, waiting):
+            result = verify(remote.compose("restore", bundle.backup_id, "--operation", operation))
+            retired(remote.compose("restore-files", "retire-owned", bundle.backup_id, bundle.manifest_sha256))
+            return result
+        return client.recover(self.b, self.args, self.site, self.enroll, self.ask, finish=finish)
 
     def test_confirm_once_and_retire_only_our_exact_copy(self):
         result = self.run_flow()
@@ -83,6 +197,21 @@ class MacRecoveryTests(unittest.TestCase):
         self.site.created = False
         self.run_flow()
         self.assertEqual(self.site.log[-1], "retire-owned")
+
+    def test_site_guide_options_select_existing_yaml_and_data_and_match_receipt(self):
+        self.args.compose_file = "/data/演练 '一'/站点.yml"
+        self.args.site_dir = "/data/两 个目录/站点"
+        self.args.site_url = TARGET["url"]
+        command = shlex.split(client.keys.compose_command(self.args, ["run", "--rm", "backup-key"]))
+        self.assertIn("GIFTLEDGER_SITE_DIR=" + self.args.site_dir, command)
+        self.assertIn("GIFTLEDGER_HTTPS_PORT=28443", command)
+        self.assertEqual(command[command.index("-f") + 1], self.args.compose_file)
+        self.run_flow()
+        self.args.site_url = "https://192.168.10.6:28444/"
+        self.site.log.clear()
+        with self.assertRaisesRegex(client.keys.EnrollmentError, "网址"):
+            self.run_flow()
+        self.assertNotIn(("--operation", OP), self.site.log)
 
     def test_cancel_binds_preflight_then_retires_managed_input(self):
         self.ask.return_value = False
@@ -140,7 +269,7 @@ class MacRecoveryTests(unittest.TestCase):
             for i, name in enumerate(FILES):
                 (base / name).write_bytes(bytes([i]) * 8000)
             (base / "ssh").write_text("#!/bin/sh\nexec /bin/sh -c \"$3\"\n")
-            (base / "sudo").write_text("#!/bin/sh\nexport TEST_BODY=1\nexec \"$@\"\n")
+            (base / "sudo").write_text('#!/bin/sh\n[ "$1" = -p ] && shift 2\nexport TEST_BODY=1\nexec "$@"\n')
             (base / "docker").write_text('#!/bin/sh\n[ "$1" != info ] || exit 1\n'
                                          'test "$TEST_BODY" = 1 && printf \'{"args":true}\\n\'\n')
             for cmd in ("ssh", "sudo", "docker"):
@@ -157,6 +286,34 @@ class MacRecoveryTests(unittest.TestCase):
                         self.assertEqual((folder / name).stat().st_mode & 0o777, 0o600)
                     self.assertEqual(remote.compose("restore", ID, "--status"), {"args": True})
                 self.assertFalse(scratch.exists())
+
+    def test_final_write_and_cleanup_share_authorization_after_verified_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            # A native sudo timestamp is normally scoped to the SSH terminal. Use
+            # one marker per SSH process to count prompts without a real password.
+            (base / "ssh").write_text('#!/bin/sh\nexport QA_TTY=$$\nexec /bin/sh -c "$3"\n')
+            (base / "sudo").write_text('#!/bin/sh\n[ "$1" = -p ] || exit 1\n'
+                'if [ ! -e "$QA_DIR/$QA_TTY" ]; then echo "$2" >> "$QA_DIR/prompts"; touch "$QA_DIR/$QA_TTY"; fi\n'
+                'shift 2\nexec "$@"\n')
+            (base / "docker").write_text('#!/bin/sh\n[ "$1" != info ] || exit 1\n'
+                'echo "$*" >> "$QA_DIR/operations"\nprintf \'{"ok":true}\\n\'\n')
+            for name in ("ssh", "sudo", "docker"):
+                (base / name).chmod(0o700)
+            remote = client.Remote([str(base / "ssh")], self.args, tmp)
+            announce = mock.Mock()
+            retired = mock.Mock()
+            def verify(value):
+                self.assertNotIn("retire-owned", (base / "operations").read_text())
+                self.assertEqual(value, {"ok": True})
+                return value
+            with mock.patch.dict(os.environ, {"PATH": tmp + os.pathsep + os.environ["PATH"], "QA_DIR": tmp}):
+                result = client.finish_in_one_session(remote, self.b, OP, verify, announce, retired, client.waiting)
+            self.assertEqual(result, {"ok": True})
+            announce.assert_called_once_with(result)
+            retired.assert_called_once_with(result)
+            self.assertEqual(len((base / "prompts").read_text().splitlines()), 1)
+            self.assertIn("retire-owned", (base / "operations").read_text())
 
 
 class ManagedRestoreCopies(unittest.TestCase):

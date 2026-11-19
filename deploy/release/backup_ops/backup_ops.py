@@ -1584,7 +1584,8 @@ def run(
                 error, "code", "coordinator_interrupted_preserve_evidence"
             )
             needs_recovery = bool(
-                leased
+                mode == "recover"
+                or leased
                 or stopped
                 or (
                     worker is not None

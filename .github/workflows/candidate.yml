@@ -6,6 +6,25 @@ on:
 permissions:
   contents: read
 jobs:
+  windows-site-tools:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: checkout
+          persist-credentials: false
+      - name: Stage reviewed bytes
+        run: python -I checkout/deploy/publication/images.py stage-source checkout reviewed
+      - name: Exercise the packaged Windows launcher and local key permissions
+        working-directory: reviewed
+        run: python -m unittest discover -v -s validation/release -p test_windows_site.py
   candidate:
     runs-on: ubuntu-24.04
     timeout-minutes: 60

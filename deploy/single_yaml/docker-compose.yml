@@ -2,7 +2,7 @@
 # 将本文件放入选定的站点目录。数据库、网站文件、网址及本站公开证书保存在同级的 data 目录。
 # 填写本机局域网 IP、空闲 HTTPS 端口。已有的站点继续使用原数据目录和项目名。
 # Ubuntu：docker compose up -d。群晖：Container Manager → 项目 → 新增 → 使用已有 YAML。
-# 钥匙登记后，在此目录运行 docker compose run --rm backup 可生成并核验整站备份。
+# 首次备份、群晖任务计划及证书续签请看 data/本站维护说明.txt，按本站命令操作。
 name: gift-ledger
 x-site-ip: &site-ip "${GIFTLEDGER_SITE_IP:-192.168.1.20}"
 x-site-port: &site-port "${GIFTLEDGER_HTTPS_PORT:-8443}"
@@ -53,7 +53,11 @@ services:
   prepare:
     <<: *installer
     image: giftledger-candidate/backup:1.5.0-stage5-r1
-    environment: *site
+    environment:
+      <<: *site
+      GIFTLEDGER_PROJECT_DIR: "${GIFTLEDGER_PROJECT_DIR:-}"
+      GIFTLEDGER_SITE_DIR: "${GIFTLEDGER_SITE_DIR:-.}"
+      GIFTLEDGER_GUIDE_CONFIG_FILE: "${GIFTLEDGER_GUIDE_CONFIG_FILE:-}"
     command: [prepare]
     volumes:
       - "${GIFTLEDGER_SITE_DIR:-.}:/station"
@@ -79,6 +83,13 @@ services:
       - "/var/run/docker.sock:/var/run/docker.sock"
       - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-backup-state:/work/backup-state"
       - "${GIFTLEDGER_SITE_DIR:-.}/backups:/work/backups"
+  certificate:
+    <<: *maintenance-coordinator
+    entrypoint: ["/opt/venv/bin/python3.12", "/opt/gift-ledger-install/certificate_site.py"]
+    command: [inspect]
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-backup-state:/work/backup-state"
   backup-key:
     <<: *installer
     image: giftledger-candidate/backup:1.5.0-stage5-r1

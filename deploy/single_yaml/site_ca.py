@@ -1,17 +1,19 @@
 """A private installation authority and a TLS server certificate for one LAN IP."""
 
 import ipaddress
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from certificate_policy import ACCEPTED_LIFETIMES, LEAF_DAYS
+
 
 PROFILE = "site-ca-v1"
-ROOT_DAYS = 1825
-LEAF_DAYS = 90
+# RFC 5280 §4.1.2.5 represents an undefined expiry with this UTC instant.
+ROOT_NOT_AFTER = datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
 PEM = serialization.Encoding.PEM
 
 
@@ -20,8 +22,9 @@ def private_pem(key):
 
 
 def certificate_info(host, leaf, root):
+    lifetime = leaf.not_valid_after_utc - leaf.not_valid_before_utc
     return {
-        "profile": PROFILE, "host": host, "validity_days": LEAF_DAYS,
+        "profile": PROFILE, "host": host, "validity_days": lifetime.days,
         "not_before": leaf.not_valid_before_utc.isoformat(timespec="seconds"),
         "not_after": leaf.not_valid_after_utc.isoformat(timespec="seconds"),
         "certificate_sha256": leaf.fingerprint(hashes.SHA256()).hex(),
@@ -33,23 +36,34 @@ def issue(host, instance, now):
     ip = ipaddress.IPv4Address(host)
     start = now - timedelta(minutes=5)
     issuer_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
-    leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"GiftLedger Site CA {instance}")])
-    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)])
     root = (
         x509.CertificateBuilder().subject_name(issuer).issuer_name(issuer)
         .public_key(issuer_key.public_key()).serial_number(x509.random_serial_number())
-        .not_valid_before(start).not_valid_after(start + timedelta(days=ROOT_DAYS))
+        .not_valid_before(start).not_valid_after(ROOT_NOT_AFTER)
         .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
         .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, None, None), critical=True)
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(issuer_key.public_key()), critical=False)
         .add_extension(x509.NameConstraints([x509.IPAddress(ipaddress.ip_network(f"{ip}/32"))], None), critical=True)
         .sign(issuer_key, hashes.SHA256())
     )
+    files, metadata = sign_leaf(host, root, issuer_key, root.not_valid_before_utc)
+    return files, metadata, private_pem(issuer_key)
+
+
+def sign_leaf(host, root, issuer_key, start):
+    end = start + timedelta(days=LEAF_DAYS)
+    if start < root.not_valid_before_utc or end > root.not_valid_after_utc:
+        raise ValueError("site_ca_cannot_cover_leaf_lifetime")
+    if issuer_key.public_key() != root.public_key():
+        raise ValueError("site_ca_signing_key_mismatch")
+    ip = ipaddress.IPv4Address(host)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)])
+    leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     leaf = (
-        x509.CertificateBuilder().subject_name(subject).issuer_name(issuer)
+        x509.CertificateBuilder().subject_name(subject).issuer_name(root.subject)
         .public_key(leaf_key.public_key()).serial_number(x509.random_serial_number())
-        .not_valid_before(start).not_valid_after(start + timedelta(days=LEAF_DAYS))
+        .not_valid_before(start).not_valid_after(end)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.KeyUsage(True, False, True, False, False, False, False, None, None), critical=True)
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
@@ -63,7 +77,7 @@ def issue(host, instance, now):
         "certs/privkey.pem": private_pem(leaf_key),
         "certs/ca-chain.pem": root.public_bytes(PEM),
     }
-    return files, certificate_info(host, leaf, root), private_pem(issuer_key)
+    return files, certificate_info(host, leaf, root)
 
 
 def verify(files, issuer_key_pem, host, now, expected):
@@ -89,7 +103,7 @@ def verify(files, issuer_key_pem, host, now, expected):
         and leaf_ext(x509.SubjectAlternativeName).value == x509.SubjectAlternativeName([x509.IPAddress(ip)])
         and root.not_valid_before_utc <= leaf.not_valid_before_utc <= now
         and now + timedelta(days=1) < leaf.not_valid_after_utc <= root.not_valid_after_utc
-        and leaf.not_valid_after_utc - leaf.not_valid_before_utc == timedelta(days=LEAF_DAYS)
+        and leaf.not_valid_after_utc - leaf.not_valid_before_utc in ACCEPTED_LIFETIMES
         and certificate_info(host, leaf, root) == expected
     ):
         raise ValueError("site_ca_verification_failed")

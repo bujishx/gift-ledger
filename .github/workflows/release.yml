@@ -93,5 +93,6 @@ jobs:
       - name: Publish installation files for site owners
         env:
           GH_TOKEN: ${{ github.token }}
+          GIFTLEDGER_PUBLIC_SOURCE: ${{ github.workspace }}/selected-source
         run: |
           python3 deploy/publication/github_release.py "$RUNNER_TEMP/release" "$VERSION" "$TESTED_SHA"

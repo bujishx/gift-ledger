@@ -10,6 +10,8 @@ import stat
 import sys
 from tempfile import NamedTemporaryFile
 
+import owner_guide
+
 
 DATA = Path("/station/data")
 ROLES = ("root_config", "app_secrets", "db_secrets", "tls_config", "mysql_data", "app_data")
@@ -56,7 +58,7 @@ def check_directory():
     if not stat.S_ISDIR(DATA.lstat().st_mode):
         raise SiteError("站点的数据目录必须是实际目录")
     names = {child.name for child in DATA.iterdir()}
-    public = {ADDRESS, LEGACY_CERTIFICATE, ROOT_CERTIFICATE}
+    public = {ADDRESS, LEGACY_CERTIFICATE, ROOT_CERTIFICATE, owner_guide.FILENAME}
     if names - (set(ROLES) | public):
         raise SiteError("所选数据目录还有其他文件，请选择本站专用的空目录")
     for role in names.intersection(ROLES):
@@ -91,29 +93,76 @@ def check_directory():
             raise SiteError("原应用数据目录不完整")
 
 
-def publish_public(name, content):
-    path = DATA / name
+def publish_file(path, content, limit, mode, temporary_dir):
     if path.exists() or path.is_symlink():
         info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 16384:
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > limit:
             raise SiteError("公开资料路径异常，请核对站点目录")
         if path.read_bytes() == content:
             return
-    with NamedTemporaryFile(dir=DATA / "root_config" / "maintenance", delete=False) as output:
+    with NamedTemporaryFile(dir=temporary_dir, delete=False) as output:
         tmp = Path(output.name)
         try:
             output.write(content)
             output.flush()
             os.fsync(output.fileno())
-            os.fchmod(output.fileno(), 0o644)
+            os.fchmod(output.fileno(), mode)
             tmp.replace(path)
         finally:
             tmp.unlink(missing_ok=True)
 
 
+def publish_public(name, content):
+    limit = 512 * 1024 if name == owner_guide.FILENAME else 16384
+    publish_file(DATA / name, content, limit, 0o644, DATA / "root_config/maintenance")
+
+
+def publish_guide(project, url, identity, *, refresh=False):
+    # A routine prepare gets the Compose environment again, without the host-only
+    # labels read by the operator's refresh command. Cache those paths privately.
+    directory = owner_guide.host_path(os.environ.get("GIFTLEDGER_PROJECT_DIR"))
+    station = owner_guide.station_path(directory, os.environ.get("GIFTLEDGER_SITE_DIR") or ".")
+    config = owner_guide.host_path(os.environ.get("GIFTLEDGER_GUIDE_CONFIG_FILE"))
+    # Keep host-specific paths outside the installer's strictly checked
+    # certificate journal and outside an exported database backup.
+    state = DATA.parent / ".giftledger-backup-state"
+    cache = state / "owner-guide-paths.json"
+    private_state = False
+    if os.path.lexists(state):
+        meta = state.lstat()
+        private_state = (stat.S_ISDIR(meta.st_mode) and stat.S_IMODE(meta.st_mode) == 0o700
+                         and meta.st_uid == os.geteuid())
+    binding = {"project": project, "instance_id": identity["instance_id"]}
+    if refresh:
+        if not private_state or not all((directory, station, config)):
+            raise SiteError("请复制本站说明中的完整目录核对命令，以读取宿主机路径")
+        record = dict(binding, project_dir=str(directory), site_dir=str(station), config_file=str(config))
+        publish_file(cache, json.dumps(record, ensure_ascii=False).encode(), 32768, 0o600, state)
+    elif private_state and cache.is_file() and not cache.is_symlink() and cache.stat().st_size <= 32768:
+        try:
+            record = json.loads(cache.read_bytes())
+            host_paths = [owner_guide.host_path(record[key]) for key in ("project_dir", "site_dir", "config_file")]
+            if (all(record.get(key) == value for key, value in binding.items()) and all(host_paths)
+                    and all(current in (None, saved) for current, saved in zip((directory, station, config), host_paths))):
+                directory, station, config = host_paths
+        except (ValueError, KeyError, TypeError, AttributeError):
+            # A corrupt cache never prevents opening the site or host rediscovery.
+            pass
+    text = owner_guide.render(project, url, identity, project_dir=str(directory or ""),
+                              site_dir=str(station or "."), config_file=str(config or ""))
+    publish_public(owner_guide.FILENAME, text.encode())
+
+
 def main():
     project = os.environ["GIFTLEDGER_PROJECT"]
     url = site_url(project_host(project))
+    if sys.argv[1:] == ["refresh-guide"]:
+        identity = json.loads((DATA / "root_config/site/control/identity.json").read_bytes())
+        if identity.get("project") != project or (DATA / ADDRESS).read_text().strip() != url + "/":
+            raise SiteError("该维护说明的项目或网址与已安装的站点不符")
+        publish_guide(project, url, identity, refresh=True)
+        print(f"项目 {project} 的 data/{owner_guide.FILENAME} 已更新。")
+        return 0
     if sys.argv[1:] == ["prepare"]:
         from prepare_volumes import prepare_volumes
         check_directory()
@@ -139,6 +188,7 @@ def main():
         else:
             publish_public(LEGACY_CERTIFICATE, (DATA / "tls_config/fullchain.pem").read_bytes())
         publish_public(ADDRESS, (url + "/\n").encode())
+        publish_guide(project, url, identity)
         print(f"往来有礼网站地址：{url}/", flush=True)
         return 0
     if sys.argv[1:] == ["initialize"]:

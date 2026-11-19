@@ -221,6 +221,7 @@ class Tests(unittest.TestCase):
             )
             self.assertNotIn("{GITHUB_REPOSITORY}", path.read_text())
             self.assertNotIn("/releases/latest/", path.read_text())
+            self.assertIn("/releases/download/v1.5.0/windows-site-tools.zip", path.read_text())
         with ZipFile(a / "mac-site-tools.zip") as z:
             self.assertEqual(
                 z.read("docker-compose.yml"), (a / "docker-compose.yml").read_bytes()
@@ -239,6 +240,23 @@ class Tests(unittest.TestCase):
                     "站主升级.md",
                 },
             )
+        with ZipFile(a / "windows-site-tools.zip") as win, ZipFile(a / "mac-site-tools.zip") as mac:
+            self.assertEqual(set(win.namelist()) - set(mac.namelist()),
+                             {"GiftLedger.cmd", "windows_site.py", "windows_key.ps1"})
+            for member in mac.namelist():
+                self.assertEqual(win.read(member), mac.read(member))
+            launcher = win.read("GiftLedger.cmd")
+            self.assertIn(b"windows_site.py", launcher)
+            self.assertNotIn(b"\n", launcher.replace(b"\r\n", b""))
+
+    def test_old_reviewed_candidate_retries_four_asset_format(self):
+        with mock.patch.object(images, "has_windows_tools", return_value=False):
+            folder = self.bundle()
+        api = FakeGitHub()
+        with mock.patch.object(github_release, "has_windows_tools", return_value=False):
+            github_release.deliver(api, "v1.5.0", self.commit, folder)
+            github_release.deliver(api, "v1.5.0", self.commit, folder)
+        self.assertEqual(set(api.uploads), github_release.EXPECTED - {"windows-site-tools.zip"})
 
     def test_interrupted_draft_retries_without_overwriting_assets(self):
         path = self.bundle()

@@ -20,9 +20,9 @@ STORE = Path("/work/backups")
 RESTORE_INPUT = Path("/work/restore-input")
 STATE_NAME = ".giftledger-backup-state"
 STORE_NAME = "backups"
-def release_images(path):
+def release_images(path, *, raw=None):
     # Different engines report the config, manifest or index of the same image.
-    values = json.loads(path.read_bytes())
+    values = json.loads(path.read_bytes() if raw is None else raw)
     ops.require(isinstance(values, dict) and set(values) == {"api", "db", "web"},
                 "release_image_roles_invalid")
     result = {}
@@ -37,7 +37,8 @@ def release_images(path):
     return result
 
 
-SERVICE_IMAGES = release_images(Path(__file__).with_name("service_images.json"))
+_images = Path(__file__).with_name("service_images.json")
+SERVICE_IMAGES = release_images(_images, raw=__loader__.get_data(str(_images)))
 TEMPORARY = {
     "web": {"/tmp", "/var/cache/nginx", "/var/run"},
     "api": {"/tmp", "/var/lib/mysql"},
@@ -61,6 +62,14 @@ def site_directories():
                     "backup_directory_permission_mismatch")
 
 
+def check_certificate_idle(state_dir=None):
+    journal = (STATE if state_dir is None else Path(state_dir)) / "certificate.json"
+    if os.path.lexists(journal):
+        ops.no_links(journal)
+        ops.require(ops.read_json(journal).get("stage") in {"completed", "rolled-back"},
+                    "unfinished_certificate_renewal")
+
+
 def mount(kind, source, writable):
     return kind, str(source), writable
 
@@ -82,7 +91,7 @@ def inspect_service(docker, project, role):
     ids = docker.call("ps", "-a", "--no-trunc",
                       "--filter", "label=com.docker.compose.project=" + project,
                       "--filter", "label=com.docker.compose.service=" + role,
-                      "--format", "{{.ID}}").splitlines()
+                      "--filter", "label=com.docker.compose.oneoff=False", "--format", "{{.ID}}").splitlines()
     ops.require(len(ids) == 1 and ops.SHA.fullmatch(ids[0]), "compose_service_missing_or_ambiguous")
     found = docker.inspect(ids[0])
     ops.require(found["id"] == ids[0] and found["project"] == project and found["service"] == role,
@@ -107,7 +116,7 @@ def worker_mounts(profile, run_dir, identity_role):
     ops.require(identity_role in ("backup_identity", "restore_identity"), "unexpected_recovery_key_role")
     station = Path(profile["station"])
     project = profile["project"]
-    exchange = ops.mkdir(run_dir / "exchange").relative_to(STATE)
+    exchange = ops.mkdir(run_dir / "exchange").relative_to(Path(profile.get("state_dir", STATE)))
     mounts = {"/work/exchange": mount("bind", station / STATE_NAME / exchange, True)}
     for role, target in ops.ROLES.items():
         if role in {"mysql_socket", "backup_identity"}:
@@ -118,27 +127,32 @@ def worker_mounts(profile, run_dir, identity_role):
     return mounts
 
 
+def previous_worker(profile, docker, journal):
+    # Creation can precede the atomic journal update recording the returned ID.
+    session = journal["session_id"]
+    ids = docker.call("ps", "-a", "--no-trunc",
+                      "--filter", "label=org.gift-ledger.backup-session=" + session,
+                      "--filter", "label=com.docker.compose.project=" + profile["project"],
+                      "--format", "{{.ID}}").splitlines()
+    ops.require(len(ids) <= 1, "ambiguous_previous_worker")
+    if ids:
+        found = docker.inspect(ids[0])
+        ops.require(ops.SHA.fullmatch(ids[0]) and (not journal.get("worker_id") or journal["worker_id"] == ids[0])
+                    and found["id"] == ids[0] and found["image"] == profile["maintenance_image"]
+                    and found["session"] == session and found["project"] == profile["project"]
+                    and found["name"] == "/" + profile["project"] + "-backup-ops-" + session,
+                    "previous_worker_identity_mismatch")
+        return ids[0]
+
+
 class Worker(ops.Worker):
     """Reuse the tested session/attach/recovery protocol with actual bind paths."""
 
     def __init__(self, profile, docker, journal, run_dir, *, recover=False):
         if recover:
-            # Docker may have created the worker just before a host reboot,
-            # before its returned container ID reached the on-disk journal.
-            session = journal["session_id"]
-            ids = docker.call("ps", "-a", "--no-trunc",
-                              "--filter", "label=org.gift-ledger.backup-session=" + session,
-                              "--filter", "label=com.docker.compose.project=" + profile["project"],
-                              "--format", "{{.ID}}").splitlines()
-            ops.require(len(ids) <= 1, "ambiguous_previous_worker")
-            if ids:
-                found = docker.inspect(ids[0])
-                ops.require((not journal.get("worker_id") or journal["worker_id"] == ids[0])
-                            and found["id"] == ids[0] and found["image"] == profile["maintenance_image"]
-                            and found["session"] == session and found["project"] == profile["project"]
-                            and found["name"] == "/" + profile["project"] + "-backup-ops-" + session,
-                            "previous_worker_identity_mismatch")
-                journal["worker_id"] = ids[0]
+            bound = previous_worker(profile, docker, journal)
+            if bound:
+                journal["worker_id"] = bound
         super().__init__(profile, docker, journal, run_dir, recover=recover)
 
     def _mount_arguments(self, run_dir):
@@ -167,7 +181,7 @@ class SiteBindings:
     def __init__(self, docker, project, *, service="backup"):
         self.docker, self.project, self.service = docker, project, service
         self.coordinator = docker.inspect(socket.gethostname())
-        ops.require(service in ("backup", "restore") and self.coordinator["service"] == service and self.coordinator["project"] == project
+        ops.require(service in ("backup", "restore", "certificate") and self.coordinator["service"] == service and self.coordinator["project"] == project
                     and self.coordinator["running"], "backup_coordinator_identity_mismatch")
         binds = {item["Destination"]: item["Source"] for item in self.coordinator["mounts"] if item["Type"] == "bind"}
         self.station = Path(binds[str(STATE)]).parent
@@ -186,7 +200,7 @@ class SiteBindings:
         }
         if service == "restore":
             expected[str(RESTORE_INPUT)] = mount("bind", self.station / "restore-input", False)
-        else:
+        elif service == "backup":
             expected[str(STORE)] = mount("bind", self.station / STORE_NAME, True)
         check_mounts(self.coordinator["mounts"], expected, {"/tmp", "/var/lib/mysql"})
 
@@ -206,7 +220,9 @@ class SiteBindings:
         return ops.bound_services(profile, docker, mount_validator=self.service_mounts)
 
     def check_run(self, profile, docker, original, *, identity_role="backup_identity"):
-        restore = STATE / "restore.json"
+        state = Path(profile.get("state_dir", STATE))
+        check_certificate_idle(state)
+        restore = state / "restore.json"
         if self.service == "backup" and restore.exists():
             ops.require(ops.read_json(restore)["stage"] in ("preflight", "eligible", "completed", "rejected"),
                         "unfinished_restore_blocks_backup")
@@ -227,11 +243,12 @@ class SiteBindings:
                             and labels.get("org.gift-ledger.gui-v2-role") == role, "backup_key_volume_mismatch")
 
     def profile(self):
-        ops.backup_store._store(STORE)  # reject a foreign output directory before stopping applications
-        path = STATE / "site.json"
+        state, store = self.directories()
+        ops.backup_store._store(store)  # reject a foreign output directory before stopping applications
+        path = state / "site.json"
         ops.require(path.exists(), "backup_key_registration_required")
         ops.no_links(path)
-        for item, mode in ((STATE, 0o700), (path, 0o600)):
+        for item, mode in ((state, 0o700), (path, 0o600)):
             info = item.lstat()
             ops.require(stat.S_IMODE(info.st_mode) == mode and (info.st_uid, info.st_gid) == (0, 0),
                         "backup_registration_permissions_invalid")
@@ -244,7 +261,11 @@ class SiteBindings:
         return {**self.runtime_profile(), "instance_id": record["instance_id"], "server_uuid": record["server_uuid"],
                 "recipient": record["backup_recipient"], "preview_policy": "fixed-window"}
 
+    def directories(self):
+        return STATE, STORE
+
     def runtime_profile(self):
+        state, store = self.directories()
         containers = {}
         for role in ops.SERVICES:
             found = inspect_service(self.docker, self.project, role)
@@ -252,8 +273,8 @@ class SiteBindings:
             containers[role] = {key: found[key] for key in ("id", "image", "mounts")}
             containers[role]["name"] = found["name"].lstrip("/")
         return {"project": self.project, "schema_revision": "schema_v2_s011",
-                "station": str(self.station), "state_dir": str(STATE), "store_dir": str(STORE),
-                "docker_bin": "/usr/bin/docker", "maintenance_image": self.coordinator["image"],
+                "station": str(self.station), "state_dir": str(state), "store_dir": str(store),
+                "docker_bin": str(self.docker.binary), "maintenance_image": self.coordinator["image"],
                 "containers": containers}
 
 
@@ -262,18 +283,26 @@ def backup():
     single_yaml_site.project_host(project)
     docker = ops.Docker("/usr/bin/docker", "unix:///var/run/docker.sock")
     site = SiteBindings(docker, project)
-    profile = site.profile()
-    pending = [row for _, row in ops.run_records(STATE)
+    report_backup(run_backup(site, site.profile(), docker, Worker))
+
+
+def run_backup(site, profile, docker, worker_factory):
+    state, store = site.directories()
+    pending = [row for _, row in ops.run_records(state)
                if row["stage"] not in ("finished", "preflight-failed") or row.get("private_cleanup_pending")]
     ops.require(len(pending) <= 1, "ambiguous_backup_session")
     mode, session = ("recover", pending[0]["session_id"]) if pending else ("manual", None)
     result = ops.run(profile, docker=docker, mode=mode, session_id=session,
-                     worker_factory=Worker, site_bindings=site)
+                     worker_factory=worker_factory, site_bindings=site)
     ops.require(not result.get("private_cleanup_pending"), "private_cleanup_pending")
     ops.require(result.get("bundle_id"), "backup_not_published")
-    bundle = STORE / "artifacts" / result["bundle_id"]
+    bundle = store / "artifacts" / result["bundle_id"]
     manifest = ops.backup_store.inspect_bundle(bundle)
     ops.require(ops.bundle_matches_run(manifest, result, profile), "finished_backup_bundle_mismatch")
+    return bundle
+
+
+def report_backup(bundle):
     print(f"本站备份已实际解密核验，服务已回到备份前的状态。请复制整个目录：backups/artifacts/{bundle.name}/")
 
 
@@ -281,6 +310,8 @@ def main():
     if sys.argv[1:] == ["prepare"]:
         single_yaml_site.main()
         site_directories()
+    elif sys.argv[1:] == ["refresh-guide"]:
+        single_yaml_site.main()
     elif sys.argv[1:] == ["backup"]:
         backup()
     else:

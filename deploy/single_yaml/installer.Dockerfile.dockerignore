@@ -15,4 +15,6 @@
 !deploy/release/assets/verify_schema.py
 !deploy/single_yaml/
 !deploy/single_yaml/single_yaml_site.py
+!deploy/single_yaml/owner_guide.py
 !deploy/single_yaml/site_ca.py
+!deploy/single_yaml/certificate_policy.py

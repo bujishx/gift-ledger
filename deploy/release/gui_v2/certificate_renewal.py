@@ -1,4 +1,4 @@
-"""Offline, journalled renewal of ONLY the GUI v2 internal self-signed TLS pair.
+"""Offline, journalled renewal of a site's HTTPS certificate.
 
 The owner stops Web in DSM before running this one-shot utility. No Docker API,
 network, database, external certificate, forced unlock or scheduler is provided.
@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 
 ROOT = Path("/work/site")
 PATHS = {"root": ROOT, "app_secrets": Path("/work/app-secrets"),
@@ -164,6 +165,11 @@ def verify(project, paths, *, moment, overlay=None, midpoint=False):
     result.update({"tls": identity["tls"], "server_uuid": initialized["server_uuid"],
                    "certificate_currently_usable": moment >= certificate.not_valid_before_utc
                    and moment + timedelta(days=1) < certificate.not_valid_after_utc})
+    result["ca_details"] = {}
+    if identity["tls"].get("profile") == "site-ca-v1":
+        root = x509.load_pem_x509_certificate(read(paths["root"] / "site/certs/ca-chain.pem", 0o644))
+        result["ca_details"] = {"root_sha256": identity["tls"]["root_sha256"],
+                                "root_not_after": root.not_valid_after_utc.isoformat(timespec="seconds")}
     return result
 
 
@@ -197,6 +203,13 @@ def lease(module, root):
 def check_history(module, control, *, own=None):
     for path in control.iterdir():
         if path.name in {"operation.lock", "active.json"}:
+            continue
+        if path.name == "site-ca" and os.environ.get("GIFTLEDGER_INSTALL_KIND") == "single-yaml":
+            identity = read_json(module, control.parent / "site/control/identity.json")
+            require(identity["tls"].get("profile") == "site-ca-v1", "unexpected_site_ca_directory")
+            module._metadata(path, 0o700, directory=True)
+            require({item.name for item in path.iterdir()} == {"issuing-key.pem"}, "site_ca_key_directory_invalid")
+            module._metadata(path / "issuing-key.pem", 0o600)
             continue
         if OPERATION.fullmatch(path.name):
             module._metadata(path, 0o700, directory=True)
@@ -257,9 +270,26 @@ def plan(module, project, paths, moment):
     before = {name: module._read_safe(path, mode) for name, (path, mode) in entries.items()}
     after = dict(before)
     host = module._project_host(project)
-    certificate, private, metadata = module._new_tls(host, moment)
-    generated = {"fullchain.pem": certificate, "privkey.pem": private, "ca-chain.pem": certificate}
-    module._verify_tls({"certs/" + n: raw for n, raw in generated.items()}, metadata, host, moment)
+    identity = json.loads(before["root/site/control/identity.json"], object_pairs_hook=module._unique_object)
+    if "profile" in identity["tls"]:
+        import site_ca
+        from certificate_policy import renewal_start
+        require(os.environ.get("GIFTLEDGER_INSTALL_KIND") == "single-yaml"
+                and identity["tls"]["profile"] == site_ca.PROFILE, "certificate_profile_unsupported")
+        root = x509.load_pem_x509_certificate(before["tls/ca-chain.pem"])
+        old_start = datetime.fromisoformat(identity["tls"]["not_before"])
+        start = renewal_start(moment, old_start)
+        require(start <= moment, "certificate_or_clock_is_in_future")
+        require(start + timedelta(days=site_ca.LEAF_DAYS) <= root.not_valid_after_utc,
+                "site_root_certificate_replacement_required")
+        key = module._read_safe(paths["root"] / "maintenance/site-ca/issuing-key.pem", 0o600)
+        files, metadata = site_ca.sign_leaf(host, root, serialization.load_pem_private_key(key, None), start)
+        require(files["certs/ca-chain.pem"] == before["tls/ca-chain.pem"], "site_root_certificate_changed")
+        generated = {name: files["certs/" + name] for name in TLS_NAMES}
+    else:
+        certificate, private, metadata = module._new_tls(host, moment)
+        generated = {"fullchain.pem": certificate, "privkey.pem": private, "ca-chain.pem": certificate}
+        module._verify_tls({"certs/" + n: raw for n, raw in generated.items()}, metadata, host, moment)
     for name, raw in generated.items():
         after["root/site/certs/" + name] = raw
         after["tls/" + name] = raw
@@ -271,7 +301,6 @@ def plan(module, project, paths, moment):
         after["root/" + name] = module._json_bytes(value)
         return sha(after["root/" + name])
 
-    identity = record("site/control/identity.json")
     identity["tls"] = metadata
     for name, raw in generated.items():
         identity["files"]["certs/" + name]["sha256"] = sha(raw)
@@ -417,7 +446,9 @@ def run(project, action, instance_id, operation_id, *, web_stopped=False,
                 "previous_operation_incomplete_or_failed")
         result = verify(project, paths, moment=moment, midpoint=True)
         require(result["instance_id"] == instance_id, "certificate_instance_mismatch")
-        return {**base, "status": "inspected", "not_after": result["tls"]["not_after"],
+        return {**base, "status": "inspected",
+                "not_before": result["tls"]["not_before"], "not_after": result["tls"]["not_after"],
+                "certificate_sha256": result["tls"]["certificate_sha256"], **result["ca_details"],
                 "certificate_currently_usable": result["certificate_currently_usable"]}
     with lease(module, paths["root"]) as control:
         operation = control / ("certificate-" + operation_id)
@@ -429,11 +460,11 @@ def run(project, action, instance_id, operation_id, *, web_stopped=False,
             result = verify(project, paths, moment=moment, midpoint=True)
             require(result["instance_id"] == instance_id, "certificate_instance_mismatch")
             require(not os.path.lexists(operation), "certificate_operation_id_already_used")
+            before, after = plan(module, project, paths, moment)
+            verify(project, paths, moment=moment, overlay=overlay(paths, after))
             module._secure_directory(operation, create=True)
             module._sync_directory(control)
             publish_record(module, operation / "started.json", base)
-            before, after = plan(module, project, paths, moment)
-            verify(project, paths, moment=moment, overlay=overlay(paths, after))
             snapshot(module, operation, base, before, after)
             manifest_sha = sha(module._read_safe(operation / "manifest.json", 0o600))
             publish_record(module, active_path, {**base, "manifest_sha256": manifest_sha,
@@ -448,6 +479,7 @@ def run(project, action, instance_id, operation_id, *, web_stopped=False,
                 outcome = receipt(module, operation, "completed.json", base, status="completed",
                                   manifest_sha256=manifest_sha, not_after=result["tls"]["not_after"],
                                   certificate_sha256=result["tls"]["certificate_sha256"],
+                                  **result["ca_details"],
                                   owner_reported_web_stopped=True, web_stopped_independently_verified=False)
             except Exception:
                 # Keep the fixed failure marker permanently. A verified rollback
