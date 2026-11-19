@@ -1,0 +1,59 @@
+/* Typography, surfaces, fields and focus styles come from the site's own stylesheet. */
+.maintenance-page .maintenance-help {
+  margin: 0;
+  line-height: 1.65;
+}
+
+.maintenance-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.maintenance-actions button {
+  white-space: normal;
+}
+
+.maintenance-page output {
+  display: block;
+  white-space: pre-line;
+}
+
+.maintenance-page output:empty {
+  display: none;
+}
+
+.maintenance-page [hidden] {
+  display: none !important;
+}
+
+#account-help, .maintenance-section {
+  margin-top: 22px;
+  border-top: 1px solid var(--ui-border);
+  padding-top: 16px;
+}
+
+#account-help h2, .maintenance-section h2 { margin: 0; font-size: 18px; }
+.maintenance-section { margin-bottom: 18px; }
+.maintenance-section input[type="file"] { width: 100%; min-width: 0; }
+.maintenance-section .form-stack { margin-top: 12px; }
+#owner-security { margin-top: 16px; }
+#owner-security summary { cursor: pointer; color: var(--ui-primary); font-size: 14px; }
+#owner-security .form-stack { margin-top: 12px; }
+#owner-security .auth-field-help { margin: 0; }
+.owner-current { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 18px; }
+.owner-current strong { overflow-wrap: anywhere; }
+.owner-password-fields { display: grid; gap: 14px; }
+#account-help > p, .maintenance-section > p { font-size: 14px; line-height: 1.65; }
+#account-list { margin: 12px 0 0; padding: 0; list-style: none; }
+#account-list li { padding: 8px 0; overflow-wrap: anywhere; }
+#account-list li + li { border-top: 1px solid var(--ui-border); }
+#account-list small { display: block; color: var(--ui-muted); }
+.account-confirm { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; }
+.account-confirm input { margin: 3px 0; flex: none; }
+
+@media (max-width: 360px) {
+  .maintenance-actions {
+    grid-template-columns: 1fr;
+  }
+}

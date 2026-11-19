@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -8,6 +10,23 @@ from app.services.auth import create_user
 
 class UserNotFoundError(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class BusinessAccountSummary:
+    username: str
+    is_active: bool
+    is_admin: bool
+
+
+def list_business_accounts(session: Session) -> list[BusinessAccountSummary]:
+    rows = session.execute(
+        select(User.username, User.is_active, User.is_admin).order_by(User.id)
+    ).all()
+    return [
+        BusinessAccountSummary(name, is_active=bool(active), is_admin=bool(admin))
+        for name, active, admin in rows
+    ]
 
 
 def create_admin_user(session: Session, username: str, password: str) -> User:

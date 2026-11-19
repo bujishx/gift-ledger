@@ -2,7 +2,9 @@
 
 import copy
 import hashlib
+import importlib
 import json
+import os
 from pathlib import Path
 import secrets
 import sys
@@ -102,6 +104,77 @@ class Tests(unittest.TestCase):
             docker.call_args_list[0].args[0],
             [*compose, "ps", "--all", "--quiet", "db", "api", "web"],
         )
+
+    def test_smoke_compares_both_backup_image_binaries_with_the_native_release(self):
+        import native_age
+
+        compose = ["docker", "compose", "-f", "site.yml"]
+        image = self.refs["backup"]
+        config = json.dumps({"services": {"backup": {"image": image}}})
+        expected = "v" + native_age.AGE_VERSION
+        for versions in ((expected, expected), ("v0.0.1", expected), (expected, "v0.0.1")):
+            with self.subTest(versions=versions), mock.patch.object(
+                smoke.subprocess, "check_output", side_effect=[config, *versions]
+            ) as docker:
+                if versions == (expected, expected):
+                    smoke.verify_backup_age(compose, {})
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "expected v"):
+                        smoke.verify_backup_age(compose, {})
+                self.assertEqual(docker.call_args_list[0].args[0][:len(compose)], compose)
+                commands = [call.args[0] for call in docker.call_args_list[1:]]
+                tools = ["age"] if versions[0] != expected else ["age", "age-keygen"]
+                self.assertEqual([cmd[-4:] for cmd in commands],
+                                 [["--entrypoint", "/usr/local/bin/" + tool, image, "--version"] for tool in tools])
+                for cmd in commands:
+                    self.assertEqual(cmd[:2], ["docker", "run"])
+                    self.assertIn("--pull=never", cmd)
+
+    def test_smoke_preserves_legacy_release_without_native_tools(self):
+        with mock.patch.object(smoke, "ROOT", self.work), mock.patch.object(smoke.subprocess, "check_output") as docker:
+            smoke.verify_backup_age([], {})
+            docker.assert_not_called()
+
+    @unittest.skipUnless(sys.platform in ("darwin", "win32") and os.environ.get("GIFTLEDGER_TEST_NATIVE_DOWNLOAD") == "1",
+                         "opt-in official desktop age download")
+    def test_official_desktop_age_from_packaged_tool(self):
+        windows = sys.platform == "win32"
+        archive = "windows-site-tools.zip" if windows else "mac-site-tools.zip"
+        tools_dir = self.work / "site-tools"
+        with ZipFile(self.bundle() / archive) as z:
+            z.extractall(tools_dir)
+        home = self.work / "fresh-profile"
+        with (mock.patch.object(Path, "home", return_value=home),
+              mock.patch.dict(os.environ, LOCALAPPDATA=str(home), PATH=""),
+              mock.patch.object(sys, "path", [str(tools_dir), *sys.path]),
+              mock.patch.dict(sys.modules)):
+            for module in ("native_age", "mac_backup_key"):
+                sys.modules.pop(module, None)
+            native = importlib.import_module("native_age")
+            keys = importlib.import_module("mac_backup_key")
+            self.assertEqual(Path(native.__file__).parent, tools_dir)
+            self.assertEqual(Path(keys.__file__).parent, tools_dir)
+            self.assertEqual(native.cached_programs(), {})
+            with mock.patch.object(sys.stdin, "isatty", return_value=True), mock.patch("builtins.input", return_value="") as confirm:
+                first = keys.Age()
+            confirm.assert_called_once()
+            for tool in ("age", "age-keygen"):
+                path = Path(first.programs[tool])
+                self.assertTrue(path.is_relative_to(home))
+                self.assertEqual(path.name, tool + (".exe" if windows else ""))
+                self.assertEqual(first.run(tool, ["--version"]).decode().strip(), native.VERSION)
+
+            # The test identity stays in memory. Only synthetic ciphertext goes to disk.
+            identity = first.run("age-keygen")
+            recipient = first.run("age-keygen", ["-y"], identity).decode().strip()
+            plaintext = secrets.token_bytes(64)
+            cipher = self.work / "synthetic.age"
+            cipher.write_bytes(first.run("age", ["-r", recipient], plaintext))
+            with (mock.patch.object(native, "urlopen", side_effect=AssertionError("cache made a download")),
+                  mock.patch("builtins.input", side_effect=AssertionError("cache prompted for input"))):
+                second = keys.Age()
+                self.assertEqual(second.programs, first.programs)
+                self.assertEqual(second.run("age", ["-d", "-i", "-", str(cipher)], identity), plaintext)
 
     def test_smoke_timeout_reports_only_safe_status_for_each_service(self):
         with (
@@ -233,6 +306,8 @@ class Tests(unittest.TestCase):
                     "mac_backup_key.py",
                     "mac_restore.py",
                     "mac_restore_bundle.py",
+                    "owner_guide.py",
+                    "native_age.py",
                     "backup_store.py",
                     "backup_export.py",
                     "从备份恢复.md",
@@ -248,6 +323,21 @@ class Tests(unittest.TestCase):
             launcher = win.read("GiftLedger.cmd")
             self.assertIn(b"windows_site.py", launcher)
             self.assertNotIn(b"\n", launcher.replace(b"\r\n", b""))
+
+    def test_earlier_key_tool_rebuilds_without_newer_modules(self):
+        source = images.selected_file
+
+        def previous_source(path):
+            if Path(path).name == "mac_backup_key.py":
+                return b'import argparse\n'
+            return source(path)
+
+        with mock.patch.object(images, "selected_file", side_effect=previous_source):
+            release = self.bundle()
+        for archive in ("mac-site-tools.zip", "windows-site-tools.zip"):
+            with ZipFile(release / archive) as z:
+                self.assertNotIn("owner_guide.py", z.namelist())
+                self.assertNotIn("native_age.py", z.namelist())
 
     def test_old_reviewed_candidate_retries_four_asset_format(self):
         with mock.patch.object(images, "has_windows_tools", return_value=False):

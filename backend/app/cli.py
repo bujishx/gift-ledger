@@ -5,18 +5,17 @@ import warnings
 from collections.abc import Callable, Sequence
 
 from pydantic import ValidationError
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.security import PasswordPolicyError, UsernamePolicyError
-from app.db.models import User
 from app.db.session import get_session_factory
 from app.services.auth import UsernameAlreadyExistsError
 from app.services.user_management import (
     UserNotFoundError,
     create_admin_user,
+    list_business_accounts,
     reset_user_password,
     set_user_active,
 )
@@ -89,15 +88,13 @@ def execute_command(
 ) -> int:
     try:
         if args.command == "list-users":
-            rows = session.execute(
-                select(User.username, User.is_active, User.is_admin).order_by(User.id)
-            ).all()
-            if rows:
+            accounts = list_business_accounts(session)
+            if accounts:
                 output_function("登录名\t状态\t角色")
-                for name, active, admin in rows:
-                    state = "启用" if active else "停用"
-                    role = "管理员" if admin else "普通用户"
-                    output_function(f"{name}\t{state}\t{role}")
+                for account in accounts:
+                    state = "启用" if account.is_active else "停用"
+                    role = "管理员" if account.is_admin else "普通用户"
+                    output_function(f"{account.username}\t{state}\t{role}")
             else:
                 output_function("本站尚未注册账号。")
             return EXIT_SUCCESS

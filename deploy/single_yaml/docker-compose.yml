@@ -1,12 +1,20 @@
 # 往来有礼 · 单文件安装候选版 · Linux/amd64
-# 将本文件放入选定的站点目录。数据库、网站文件、网址及本站公开证书保存在同级的 data 目录。
-# 填写本机局域网 IP、空闲 HTTPS 端口。已有的站点继续使用原数据目录和项目名。
-# Ubuntu：docker compose up -d。群晖：Container Manager → 项目 → 新增 → 使用已有 YAML。
-# 首次备份、群晖任务计划及证书续签请看 data/本站维护说明.txt，按本站命令操作。
+# 新建站点时填写
+# 同一台主机再建独立站时，请另取项目名、另选空闲 HTTPS 端口、另建专用空文件夹。局域网 IP 可以相同。
+# 文件夹名可自取。例如在群晖 File Station 建 docker/gift-ledger-family，把本文件放进去。
+# 在 Container Manager → 项目 → 新增 中填写项目名、选择该文件夹，并使用已有 YAML。
+# 默认数据在该文件夹的 data/，备份在 backups/。升级已有站时沿用原项目名和数据目录。
+
+# 群晖在“新增项目”中填写项目名即可，这里的默认值可保留。建议两处同名，方便以后在终端操作。
+# Ubuntu 直接运行 docker compose up -d 时会使用这里的名字，例如 gift-ledger-family。
 name: gift-ledger
+# 把 192.168.1.20 换成服务器实际的局域网 IPv4 地址，保留引号和变量写法。
 x-site-ip: &site-ip "${GIFTLEDGER_SITE_IP:-192.168.1.20}"
+# 把 8443 换成本站使用的空闲 HTTPS 端口。同一 IP 上的第二个站可用 8444（如空闲）。
 x-site-port: &site-port "${GIFTLEDGER_HTTPS_PORT:-8443}"
 
+# 以下为程序配置，常规安装请保留原值
+# 网址、公开根证书和本站维护说明会写入 data/。备份、恢复及证书续签按 data/本站维护说明.txt 操作。
 x-site: &site
   GIFTLEDGER_SITE_IP: *site-ip
   GIFTLEDGER_HTTPS_PORT: *site-port
@@ -57,6 +65,7 @@ services:
       <<: *site
       GIFTLEDGER_PROJECT_DIR: "${GIFTLEDGER_PROJECT_DIR:-}"
       GIFTLEDGER_SITE_DIR: "${GIFTLEDGER_SITE_DIR:-.}"
+      GIFTLEDGER_OWNER_MAINTENANCE_GUIDE: "1"
       GIFTLEDGER_GUIDE_CONFIG_FILE: "${GIFTLEDGER_GUIDE_CONFIG_FILE:-}"
     command: [prepare]
     volumes:
@@ -189,7 +198,10 @@ services:
     depends_on:
       db: {condition: service_healthy}
       initialize: {condition: service_completed_successfully}
-    environment: *app
+    environment:
+      <<: *app
+      GIFTLEDGER_MAINTENANCE_DIR: /run/giftledger-maintenance
+      GIFTLEDGER_OWNER_STATE_DIR: /run/giftledger-owner
     entrypoint:
       - /bin/sh
       - -ec
@@ -203,6 +215,9 @@ services:
     volumes:
       - "${GIFTLEDGER_SITE_DIR:-.}/data/app_secrets:/run/secrets:ro"
       - "${GIFTLEDGER_SITE_DIR:-.}/data/app_data:/var/lib/gift-ledger"
+      - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-maintenance:/run/giftledger-maintenance:ro"
+      - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-maintenance/requests:/run/giftledger-maintenance/requests:rw"
+      - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-owner:/run/giftledger-owner:rw"
     networks: [private]
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=128m

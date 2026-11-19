@@ -15,6 +15,6 @@ def report_daily_result(result):
     if result["status"] == "current":
         return True
     if result["status"] == "deferred":
-        print("本站正在执行其他维护任务，本次自动续签检查已跳过。群晖会在下次计划运行时重试。")
+        print("本站正在执行其他维护任务，本次自动续签检查已跳过。下次计划运行时将重试。")
         return True
     return False

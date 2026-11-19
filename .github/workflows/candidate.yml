@@ -25,6 +25,14 @@ jobs:
       - name: Exercise the packaged Windows launcher and local key permissions
         working-directory: reviewed
         run: python -m unittest discover -v -s validation/release -p test_windows_site.py
+      - name: Exercise native age setup on Windows
+        working-directory: reviewed
+        run: python -m unittest discover -v -s validation/release -p test_native_age.py
+      - name: Download verified native tools and test offline reuse on Windows
+        working-directory: reviewed/validation/release
+        env:
+          GIFTLEDGER_TEST_NATIVE_DOWNLOAD: '1'
+        run: python -m unittest -v test_publication.Tests.test_official_desktop_age_from_packaged_tool
   candidate:
     runs-on: ubuntu-24.04
     timeout-minutes: 60

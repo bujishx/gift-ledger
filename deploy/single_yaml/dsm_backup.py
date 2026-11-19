@@ -12,6 +12,8 @@ import backup_ops as ops
 import backup_site as site
 from dsm_events import adapter, io, observer, provider, target
 
+WEB_BACKUP_SESSION_BINDING = 1
+
 
 class HostSite(site.SiteBindings):
     """Bind the host runner to the same prepare service, station and Docker engine."""
@@ -123,13 +125,15 @@ def reconcile_events(reports, package, docker):
     ops.fsync_directory(reports)
 
 
-def run(project, expected_station=None):
+def run(project, expected_station=None, *, expected_instance=None, engine_session=None, recover=False):
     package = target.Package.discover(backup_events=True)
     docker = ops.Docker(package.target / "usr/bin/docker")
     host = HostSite(docker, project, expected_station)
     os.environ.update(host.settings)
     site.single_yaml_site.project_host(project)
     profile = host.profile()
+    if expected_instance is not None:
+        ops.require(profile["instance_id"] == expected_instance, "maintenance_instance_mismatch")
     profile["engine_id"] = json.loads(docker.call("info", "--format", "{{json .ID}}"))
     ops.require(isinstance(profile["engine_id"], str) and profile["engine_id"], "docker_engine_identity_missing")
     binding = EventBinding(profile, package)
@@ -138,10 +142,10 @@ def run(project, expected_station=None):
     io.checked_directory(reports)
     with ops.host_lock(reports):
         reconcile_events(reports, package, docker)
-        run_with_events(host, profile, docker, package, binding, reports)
+        return run_with_events(host, profile, docker, package, binding, reports, engine_session=engine_session, recover=recover)
 
 
-def run_with_events(host, profile, docker, package, binding, reports):
+def run_with_events(host, profile, docker, package, binding, reports, *, engine_session=None, recover=False):
     label = "gl-events-" + uuid4().hex
     report = reports / label
     report.mkdir(mode=0o700)
@@ -163,7 +167,7 @@ def run_with_events(host, profile, docker, package, binding, reports):
         return wrapped(profile, driver, journal, run_dir, recover=recover)
 
     try:
-        bundle = site.run_backup(host, profile, planned, worker_factory)
+        bundle = site.run_backup(host, profile, planned, worker_factory, engine_session=engine_session, recover=recover)
     finally:
         failed = sys.exc_info()[0] is not None
         try:
@@ -174,6 +178,7 @@ def run_with_events(host, profile, docker, package, binding, reports):
                 raise
     reconcile_events(reports, package, docker)
     site.report_backup(bundle)
+    return bundle
 
 
 def main(argv=None):

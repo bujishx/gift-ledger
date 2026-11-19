@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -12,8 +15,13 @@ from app.api.routes.home import router as home_router
 from app.api.routes.imports import router as imports_router
 from app.api.routes.ledger import router as ledger_router
 from app.api.routes.ledger_queries import router as ledger_queries_router
+from app.api.routes.maintenance_accounts import router as maintenance_accounts_router
+from app.api.routes.maintenance_enrollment import router as maintenance_enrollment_router
+from app.api.routes.maintenance_login import router as maintenance_login_router
+from app.api.routes.maintenance_restore import router as maintenance_restore_router
 from app.api.routes.personal_restore import router as personal_restore_router
 from app.api.routes.profile import router as profile_router
+from app.api.routes.site_maintenance import router as site_maintenance_router
 from app.api.routes.statistics import router as statistics_router
 from app.core.config import Settings, get_settings
 from app.core.logging import RequestLoggingMiddleware, configure_logging
@@ -43,6 +51,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.add_middleware(RequestLoggingMiddleware)
     register_error_handlers(application)
+    maintenance_dir = os.environ.get("GIFTLEDGER_MAINTENANCE_DIR")
+    if maintenance_dir and Path(maintenance_dir).is_absolute():
+        application.state.maintenance_root = Path(maintenance_dir)
+        application.include_router(site_maintenance_router)
+    owner_dir = os.environ.get("GIFTLEDGER_OWNER_STATE_DIR")
+    if owner_dir is not None:
+        if not Path(owner_dir).is_absolute() or not hasattr(application.state, "maintenance_root"):
+            raise ValueError(
+                "Owner sessions require absolute site maintenance and state directories"
+            )
+        application.state.maintenance_owner_dir = Path(owner_dir)
+        application.include_router(maintenance_login_router)
+        application.include_router(maintenance_accounts_router)
+        application.include_router(maintenance_enrollment_router)
+        application.include_router(maintenance_restore_router)
     application.include_router(health_router, prefix="/api/v1")
     application.include_router(home_router, prefix="/api/v1")
     application.include_router(auth_router, prefix="/api/v1")

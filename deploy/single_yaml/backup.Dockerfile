@@ -2,10 +2,13 @@ ARG CLIENTS=gift-ledger-ops-panel:0.4.0-d17-independent-20261107
 ARG BASE=giftledger-candidate/installer:1.5.0-stage2-r1
 FROM ${CLIENTS} AS clients
 FROM ${BASE} AS dsm-host-tool
+COPY backend/app/services/maintenance_enrollment_protocol.py backend/app/services/maintenance_restore_protocol.py /tmp/dsm-build/backend/app/services/
 COPY deploy/single_yaml/ /tmp/dsm-build/deploy/single_yaml/
 COPY deploy/release/backup_ops/ /tmp/dsm-build/deploy/release/backup_ops/
-RUN /opt/venv/bin/python3.12 -I /tmp/dsm-build/deploy/single_yaml/build_dsm_backup.py /tmp/dsm-backup.pyz
+RUN /opt/venv/bin/python3.12 -I /tmp/dsm-build/deploy/single_yaml/build_dsm_backup.py /tmp/dsm-backup.pyz \
+    && /opt/venv/bin/python3.12 -I /tmp/dsm-build/deploy/single_yaml/build_maintenance_install.py /tmp/dsm-backup.pyz /tmp/maintenance-install.pyz
 FROM ${BASE}
+COPY --from=dsm-host-tool /tmp/maintenance-install.pyz /opt/gift-ledger-install/maintenance-install.pyz
 COPY --from=dsm-host-tool /tmp/dsm-backup.pyz /opt/gift-ledger-install/dsm-backup.pyz
 COPY --from=clients /usr/bin/docker /usr/bin/docker
 COPY --from=clients /usr/local/share/gift-ledger-client-notices/ /usr/local/share/gift-ledger-client-notices/

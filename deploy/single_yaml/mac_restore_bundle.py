@@ -15,9 +15,10 @@ import zipfile
 
 
 helpers = Path(__file__).resolve().parent
-if not (helpers / "backup_store.py").is_file():
-    helpers = helpers.parent / "release/backup_ops"
-sys.path.insert(0, str(helpers))
+if helpers.is_dir():
+    if not (helpers / "backup_store.py").is_file():
+        helpers = helpers.parent / "release/backup_ops"
+    sys.path.insert(0, str(helpers))
 import backup_export
 import backup_store as store
 
@@ -93,11 +94,11 @@ def extract_five(stream, folder):
 
 
 @contextmanager
-def open_bundle(path):
+def open_bundle(path, *, temporary_directory=None):
     path = Path(path).expanduser().absolute()
     if path.is_symlink():
         raise ValueError("请选择备份原文件或其实际目录。")
-    with tempfile.TemporaryDirectory(prefix="giftledger-restore-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="giftledger-restore-", dir=temporary_directory) as temporary:
         folder = Path(temporary).resolve()
         if path.is_dir():
             receipt = backup_export.export_bundle(path, folder)

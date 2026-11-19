@@ -1,11 +1,14 @@
 """Mac owner key enrollment, recovery decisions, re-entry, and streamed file transport."""
 
+from contextlib import ExitStack
 import hashlib
 import json
 import os
 from pathlib import Path
 import shlex
 import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -66,6 +69,195 @@ class MacPickerTests(unittest.TestCase):
         for value in ("q", str(self.path) + ".missing"):
             with mock.patch("builtins.input", return_value=value), self.assertRaises(client.keys.EnrollmentError):
                 client.choose_bundle()
+
+
+class DesktopAgeTests(unittest.TestCase):
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.tag = "docker.io/zhjido/giftledger-backup@sha256:" + HASH
+        self.image_id = "sha256:" + "b" * 64
+        self.missing = b"Error response from daemon: No such image: zhjido/giftledger-backup"
+        self.commands = []
+        self.inspect_error = self.missing
+        self.engine_code = 0
+        self.pull_fails = False
+        self.available_after_pull = True
+        self.pair = {"age": "/user/tools/age", "age-keygen": "/user/tools/age-keygen"}
+        self.native = SimpleNamespace(VERSION="v1.3.2", NativeAgeError=ValueError,
+                                      cached_programs=mock.Mock(return_value={}),
+                                      install_programs=mock.Mock(return_value=self.pair))
+        keys = client.keys
+        patch = self.stack.enter_context
+        patch(mock.patch.dict(sys.modules, native_age=self.native))
+        patch(mock.patch.object(sys, "platform", "darwin"))
+        patch(mock.patch.object(keys, "os", SimpleNamespace(name="posix", environ={})))
+        self.installed = patch(mock.patch.object(keys, "installed_age_programs", return_value={}))
+        patch(mock.patch.object(keys, "desktop_executables",
+                                side_effect=lambda name, extra=(): iter(["/docker"] if name == "docker" else [])))
+        path_stat = Path.stat
+        patch(mock.patch.object(Path, "stat", autospec=True, side_effect=lambda path, *a, **kw:
+            SimpleNamespace(st_mode=stat.S_IFSOCK) if path.name == "docker.sock" else path_stat(path, *a, **kw)))
+        self.tty = patch(mock.patch.object(sys.stdin, "isatty", return_value=True))
+        self.prompt = patch(mock.patch("builtins.input", return_value=""))
+        patch(mock.patch.object(subprocess, "run", side_effect=self.docker))
+
+    def docker(self, args, **kwargs):
+        self.assertEqual(args[0:2], ["/docker", "--host"])
+        self.assertTrue(args[2].replace(chr(92), "/").endswith("/docker.sock") or args[2].startswith("npipe:"))
+        command = args[3]
+        self.commands.append(command)
+        if command == "compose":
+            services = {name: {"image": self.tag} for name in ("backup", "backup-key")}
+            return subprocess.CompletedProcess(args, 0, json.dumps({"services": services}).encode(), b"")
+        if command == "image":
+            self.assertEqual(args[-1], self.tag)
+            if self.inspect_error:
+                return subprocess.CompletedProcess(args, 1, b"", self.inspect_error)
+            return subprocess.CompletedProcess(args, 0, self.image_id.encode(), b"")
+        if command == "info":
+            return subprocess.CompletedProcess(args, self.engine_code)
+        self.assertEqual(args[3:], ["pull", "--platform", "linux/amd64", self.tag])
+        self.assertTrue(kwargs["check"])
+        if self.pull_fails:
+            raise subprocess.CalledProcessError(1, args)
+        if self.available_after_pull:
+            self.inspect_error = None
+        return subprocess.CompletedProcess(args, 0)
+
+    def test_enter_downloads_native_tools_once_and_registers_the_selected_identity(self):
+        keys = client.keys
+        selected = Path("identity.txt")
+        argv = ["mac_backup_key.py", "--host", "user@192.0.2.2", "--project-dir", "/test"]
+        with mock.patch.object(sys, "argv", argv), \
+             mock.patch.object(keys, "enrollment_path", return_value=(selected, False)) as choose, \
+             mock.patch.object(keys, "custody", return_value=(b"example", "recipient")) as custody, \
+             mock.patch.object(keys, "session"), mock.patch.object(keys, "exchange", return_value=TARGET):
+            keys.main()
+        choose.assert_called_once()
+        self.prompt.assert_called_once()
+        self.native.install_programs.assert_called_once_with()
+        path, generated, age = custody.call_args.args
+        self.assertEqual((path, generated, age.programs), (selected, False, self.pair))
+        self.assertEqual(self.commands, [])
+
+    def test_both_platforms_use_installed_then_verified_cache_without_docker(self):
+        for platform in ("darwin", "win32"):
+            with self.subTest(platform=platform), mock.patch.object(sys, "platform", platform):
+                self.native.cached_programs.reset_mock()
+                self.native.cached_programs.return_value = {"age": "/cache/age", "age-keygen": "/cache/age-keygen"}
+                self.installed.return_value = self.pair
+                self.assertEqual(client.keys.Age().programs, self.pair)
+                self.native.cached_programs.assert_not_called()
+                self.installed.return_value = {}
+                self.assertEqual(client.keys.Age().programs, self.native.cached_programs.return_value)
+                self.native.cached_programs.assert_called_once_with()
+                self.assertEqual(self.commands, [])
+        self.prompt.assert_not_called()
+        self.native.install_programs.assert_not_called()
+
+    def test_only_explicit_docker_choice_can_pull_and_uses_pinned_local_image(self):
+        for platform, os_name in (("darwin", "posix"), ("win32", "nt")):
+            with self.subTest(platform=platform), mock.patch.object(sys, "platform", platform), \
+                    mock.patch.object(client.keys, "os", SimpleNamespace(name=os_name, environ={})):
+                self.commands.clear()
+                self.inspect_error = self.missing
+                self.prompt.reset_mock()
+                self.prompt.return_value = "D"
+                self.assertEqual(client.keys.Age().image, self.image_id)
+                self.prompt.assert_called_once()
+                self.assertEqual([cmd for cmd in self.commands if cmd in ("image", "pull")], ["image", "pull", "image"])
+        self.native.install_programs.assert_not_called()
+
+    def test_failed_native_download_allows_docker_or_exit(self):
+        self.native.install_programs.side_effect = ValueError("test download failure")
+        self.inspect_error = None
+        self.prompt.side_effect = ["", "q"]
+        with self.assertRaises(client.keys.EnrollmentError):
+            client.keys.Age()
+        self.assertEqual(self.commands, [])
+        self.prompt.side_effect = ["", "d"]
+        self.assertEqual(client.keys.Age().image, self.image_id)
+        self.assertEqual(self.commands, ["compose", "image"])
+
+    def test_noninteractive_uses_only_local_programs_or_cached_image_on_both_platforms(self):
+        self.tty.return_value = False
+        for platform, os_name in (("darwin", "posix"), ("win32", "nt")):
+            with self.subTest(platform=platform), mock.patch.object(sys, "platform", platform), \
+                    mock.patch.object(client.keys, "os", SimpleNamespace(name=os_name, environ={})):
+                self.inspect_error = self.missing
+                with self.assertRaises(client.keys.EnrollmentError):
+                    client.keys.Age()
+                self.inspect_error = None
+                self.assertEqual(client.keys.Age().image, self.image_id)
+        self.prompt.assert_not_called()
+        self.native.install_programs.assert_not_called()
+        self.assertNotIn("pull", self.commands)
+
+    def test_cancellation_and_unsafe_or_unavailable_docker_stop_before_download(self):
+        self.prompt.return_value = "q"
+        with self.assertRaises(client.keys.EnrollmentError):
+            client.keys.Age()
+        self.assertEqual(self.commands, [])
+        self.prompt.return_value = "d"
+        cases = ((self.tag, b"Cannot connect to the Docker daemon", 1),
+                 (self.tag, b"Permission denied", 0),
+                 ("other/backup@sha256:" + HASH, self.missing, 0),
+                 ("dockerxio/zhjido/giftledger-backup@sha256:" + HASH, self.missing, 0),
+                 ("zhjido/giftledger-backup:v1.6", self.missing, 0))
+        for tag, error, engine_code in cases:
+            with self.subTest(tag=tag, error=error):
+                self.tag, self.inspect_error, self.engine_code = tag, error, engine_code
+                with self.assertRaises(client.keys.EnrollmentError):
+                    client.keys.Age()
+        self.assertNotIn("pull", self.commands)
+
+    def test_failed_docker_download_or_unverified_image_stops(self):
+        self.prompt.return_value = "d"
+        for pull_fails in (True, False):
+            with self.subTest(pull_fails=pull_fails):
+                self.commands.clear()
+                self.pull_fails, self.available_after_pull = pull_fails, False
+                with self.assertRaises(client.keys.EnrollmentError):
+                    client.keys.Age()
+                self.assertEqual(self.commands.count("pull"), 1)
+
+
+class InstalledAgeTests(unittest.TestCase):
+    def test_only_a_pair_at_the_required_version_is_used(self):
+        def paths(name):
+            return iter(["/old/" + name, "/package/" + name])
+
+        versions = {"/old/age": b"v1.2.0", "/package/age": b"v1.3.2",
+                    "/old/age-keygen": b"v1.2.0", "/package/age-keygen": b"v1.2.0"}
+        def version(args, **kwargs):
+            self.assertEqual(args[1:], ["--version"])
+            return subprocess.CompletedProcess(args, 0, versions[args[0]] + b"\n", b"")
+
+        with mock.patch.object(client.keys, "desktop_executables", side_effect=paths), \
+                mock.patch.object(subprocess, "run", side_effect=version):
+            self.assertEqual(client.keys.installed_age_programs("v1.3.2"), {})
+            versions["/package/age-keygen"] = b"v1.3.2"
+            self.assertEqual(client.keys.installed_age_programs("v1.3.2"),
+                             {"age": "/package/age", "age-keygen": "/package/age-keygen"})
+
+    def test_skips_wrappers_and_implicit_current_directory_programs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            script, binary = root / "shims", root / "bin"
+            script.mkdir()
+            binary.mkdir()
+            for platform, name, header in (("darwin", "age", bytes.fromhex("cffaedfe")),
+                                           ("win32", "age.exe", b"MZ00")):
+                for folder, content in ((script, b"#!/bin/sh"), (binary, header), (root, header)):
+                    file = folder / name
+                    file.write_bytes(content)
+                    file.chmod(0o700)
+                (script / "age.cmd").write_bytes(b"@echo v1.3.2")
+                with self.subTest(platform=platform), mock.patch.object(sys, "platform", platform), \
+                        mock.patch.object(os, "get_exec_path", return_value=[".", str(root), str(script), str(binary)]), \
+                        mock.patch.object(Path, "cwd", return_value=root):
+                    self.assertEqual(list(client.keys.desktop_executables("age")), [str(binary / name)])
 
 
 class MacEnrollmentTests(unittest.TestCase):
@@ -135,6 +327,150 @@ class MacEnrollmentTests(unittest.TestCase):
         self.custody.assert_called_with(self.default, False, self.age.return_value)
         with self.assertRaisesRegex(client.keys.EnrollmentError, "恢复须选择"):
             self.invoke([], "--restore-key", "--generate", str(self.default))
+
+    def test_first_guide_cli_carries_the_site_binding_into_enrollment(self):
+        self.argv = ["mac_backup_key.py", "--host", "owner@192.168.10.6", "--project", "gift-test",
+                     "--site-url", TARGET["url"], "--instance-id", TARGET["instance_id"]]
+        self.invoke(["1", ""])
+        args = self.exchange.call_args.args[1]
+        self.assertIsNone(args.project_dir)
+        self.assertEqual((args.project, args.site_url, args.instance_id),
+                         ("gift-test", TARGET["url"], TARGET["instance_id"]))
+
+    def test_incomplete_first_guide_stops_before_asking_for_a_key(self):
+        options = {"--project": "gift-test", "--site-url": TARGET["url"], "--instance-id": TARGET["instance_id"]}
+        for missing in options:
+            with self.subTest(missing=missing), self.assertRaises(client.keys.EnrollmentError):
+                self.argv = ["mac_backup_key.py", "--host", "owner@192.168.10.6"]
+                for option, value in options.items():
+                    if option != missing:
+                        self.argv.extend([option, value])
+                self.invoke()
+        self.custody.assert_not_called()
+        self.session.assert_not_called()
+
+    def test_different_instance_cannot_receive_a_key_packet(self):
+        keys = client.keys
+        started = {"format": "gift-ledger-gui-key-target-v1", "project": "gift-test",
+                   "instance_id": SOURCE["source_instance_id"], "operation_id": OP, "started_at": "2026-11-19"}
+        target = {**started, "success": True, "recipient": "age1" + "a" * 58,
+                  "started_sha256": keys.digest(keys.encoded(started))}
+        raw = keys.encoded({"target": target, "registered": False})
+        self.assertEqual(keys.target_info(raw, "gift-test")[0], target)
+        args = SimpleNamespace(host="owner@192.168.10.6", project="gift-test", project_dir=None,
+                               site_dir=None, compose_file=None, site_url=TARGET["url"],
+                               instance_id=TARGET["instance_id"], restore_key=False)
+        worker = mock.Mock()
+        worker.poll.return_value = 0
+        reader = mock.Mock(returncode=0)
+        reader.communicate.return_value = (raw, b"")
+        with mock.patch.object(keys, "run", return_value=SimpleNamespace(
+                returncode=0, stdout=b"/tmp/giftledger-key-AbCd0123\n")) as remote, \
+                mock.patch.object(keys.subprocess, "Popen", side_effect=[worker, reader]), \
+                mock.patch.object(keys, "packet_for") as packet, self.assertRaises(keys.EnrollmentError):
+            keys._exchange(["ssh"], args, b"original", "recipient", self.age, {})
+        packet.assert_not_called()
+        self.assertFalse(any(len(c.args) > 3 for c in remote.call_args_list))
+
+
+@unittest.skipUnless(os.name == "posix", "the discovery command runs in the SSH server's POSIX shell")
+class MacProjectDiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.scratch = "/tmp/giftledger-key-AbCd0123"
+        self.args = SimpleNamespace(project="gift-test", host="owner@192.168.10.6", project_dir=None,
+                                    compose_file=None, site_dir=None, site_url=TARGET["url"],
+                                    instance_id=TARGET["instance_id"], restore_key=False)
+        self.dir = self.root / "站主's YAML $(false)"
+        self.dir.mkdir()
+        self.config = self.dir / "自定义 compose.yml"
+        self.config.touch()
+        self.station = self.root / "目录 与项目名不同"
+        (self.station / "data").mkdir(parents=True)
+        (self.station / "data/网站地址.txt").write_text(TARGET["url"] + "\n")
+        self.rows = [
+            {"id": "abc123", "project": "gift-test", "dir": str(self.dir), "config": str(self.config),
+             "station": str(self.station)},
+            {"id": "abc456", "project": "gift-test-old", "dir": "/other", "config": "/other/compose.yml",
+             "station": "/other"},
+        ]
+        self.call = self.root / "compose-call"
+        self.prompt = self.root / "sudo-prompts"
+        sudo = self.root / "sudo"
+        sudo.write_text('#!/bin/sh\n[ "$1" = -p ] || exit 1\nprintf "%s\\n" "$2" >> "$QA_SUDO_PROMPTS"\n'
+                        'shift 2\nexport QA_ELEVATED=1\nexec "$@"\n')
+        sudo.chmod(0o700)
+        docker = self.root / "docker"
+        docker.write_text("""#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+rows = json.loads(os.environ["QA_PROJECTS"])
+cmd, *args = sys.argv[1:]
+if os.environ["QA_NEEDS_SUDO"] == "1" and "QA_ELEVATED" not in os.environ:
+    sys.exit(1)
+if cmd == "info":
+    sys.exit(0)
+elif cmd == "ps":
+    for row in rows:
+        labels = ["project=" + row["project"], "service=prepare", "oneoff=False"]
+        if all("label=com.docker.compose." + label in args for label in labels):
+            print(row["id"])
+elif cmd == "inspect":
+    template = args[1]
+    row = next(row for row in rows if row["id"] == args[-1])
+    field = next(key for label, key in (("working_dir", "dir"), ("config_files", "config"), ("/station", "station"))
+                 if label in template)
+    print(row[field])
+elif cmd == "compose":
+    Path(os.environ["QA_COMPOSE_CALL"]).write_text(json.dumps([args, os.environ["GIFTLEDGER_SITE_DIR"]]))
+else:
+    sys.exit(90)
+""")
+        docker.chmod(0o700)
+
+    def run_worker(self, *, needs_sudo=False):
+        command = client.keys.enrollment_worker_command(self.args, self.scratch)
+        env = {**os.environ, "PATH": str(self.root) + os.pathsep + os.environ["PATH"],
+               "QA_PROJECTS": json.dumps(self.rows), "QA_COMPOSE_CALL": str(self.call),
+               "QA_SUDO_PROMPTS": str(self.prompt), "QA_NEEDS_SUDO": str(int(needs_sudo))}
+        return subprocess.run(["/bin/sh", "-c", command], cwd=self.root, env=env, capture_output=True, text=True)
+
+    def test_unique_project_uses_its_exact_paths_in_the_registration_call(self):
+        result = self.run_worker()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        options, station = json.loads(self.call.read_text())
+        self.assertEqual(options[options.index("--project-directory") + 1], str(self.dir))
+        self.assertEqual(options[options.index("-f") + 1], str(self.config))
+        self.assertEqual(options[options.index("-p") + 1], self.args.project)
+        self.assertEqual(options[-1], "backup-key")
+        self.assertEqual(station, str(self.station))
+
+    def test_discovery_and_registration_share_a_single_sudo_prompt(self):
+        result = self.run_worker(needs_sudo=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.call.exists())
+        prompts = self.prompt.read_text().splitlines()
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("ABC", prompts[0])
+
+    def test_first_guide_rejects_missing_ambiguous_and_wrong_site_before_compose(self):
+        for problem in ("wrong-url", "missing-project", "ambiguous-project", "missing-yaml"):
+            with self.subTest(problem=problem):
+                if problem == "wrong-url":
+                    self.args.site_url = TARGET["url"].replace("28443", "28444")
+                elif problem == "missing-project":
+                    self.args.project = "missing"
+                elif problem == "ambiguous-project":
+                    self.rows.append({**self.rows[0], "id": "def123"})
+                else:
+                    self.config.unlink()
+                self.assertNotEqual(self.run_worker().returncode, 0)
+                self.assertFalse(self.call.exists())
+                self.args.site_url = TARGET["url"]
+                self.args.project = "gift-test"
+                self.rows = self.rows[:2]
 
 
 class FakeSite:

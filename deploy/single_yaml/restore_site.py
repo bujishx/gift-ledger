@@ -2,7 +2,7 @@
 
 import json
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import fcntl
 import os
 from pathlib import Path
@@ -31,7 +31,7 @@ class Job:
         self.docker, self.profile, self.record = docker, profile, record
         self.op = record["operation"]
         self.name = profile["project"] + "-restore-" + self.op
-        self.folder = ops.mkdir(site.STATE / "restores" / self.op)
+        self.folder = ops.mkdir(Path(profile.get("state_dir", site.STATE)) / "restores" / self.op)
         self.mounts = site.worker_mounts(profile, self.folder, record["identity_role"])
         self.mounts["/work/source"] = site.mount("bind", Path(profile["station"]) / "restore-input" / record["backup_id"], False)
 
@@ -82,7 +82,7 @@ class Job:
                 d.call("rm", identifier)
 
 
-def remove_transfer_key(docker, project):
+def remove_transfer_key(docker, project, *, expected_key_operation=None):
     name = project + "_restore_identity"
     existing = docker.call("volume", "ls", "--format", "{{.Name}}", "--filter", "name=" + name).splitlines()
     if name not in existing:
@@ -93,6 +93,9 @@ def remove_transfer_key(docker, project):
             and labels.get("com.docker.compose.project") == labels.get("org.gift-ledger.gui-v2-project") == project
             and labels.get("com.docker.compose.volume") == labels.get("org.gift-ledger.gui-v2-role") == "restore_identity",
             "restore_key_volume_identity_mismatch")
+    if expected_key_operation is not None:
+        require(labels.get("org.gift-ledger.maintenance-restore-operation") == expected_key_operation,
+                "restore_temporary_key_not_owned")
     require(not docker.call("ps", "-aq", "--filter", "volume=" + name), "restore_key_volume_still_in_use")
     docker.call("volume", "rm", name)
 
@@ -140,18 +143,37 @@ def restore(backup_id, identity_role, *, check_only=False, cancel=False, status=
     site.single_yaml_site.project_host(project)
     docker = ops.Docker("/usr/bin/docker", "unix:///var/run/docker.sock")
     bindings = site.SiteBindings(docker, project, service="restore")
+    return run_bound(bindings, docker, project, backup_id, identity_role, site.STATE, site.RESTORE_INPUT,
+                     check_only=check_only, cancel=cancel, status=status, operation=operation, expected_web=expected_web)
+
+
+def run_bound(bindings, docker, project, backup_id, identity_role, state, inputs, *, check_only=False, cancel=False,
+              status=False, operation=None, expected_web=None, authority=None):
+    """Use the same restore journal and image worker from the CLI or an explicitly site-bound host."""
+    def release_key():
+        if identity_role == "restore_identity":
+            if authority is None:
+                remove_transfer_key(docker, project)
+            else:
+                authority.release_key()
+
     profile = bindings.runtime_profile()
     if expected_web:
         site.check_web_endpoint(docker, profile["containers"]["web"]["id"], *expected_web, "restore_site_port_mismatch")
-    journal = site.STATE / "restore.json"
+    journal = state / "restore.json"
     if status:
         return restore_status(profile, journal, backup_id)
-    with ops.host_lock(site.STATE), pin_restore_inputs(site.RESTORE_INPUT):
-        site.check_certificate_idle()
-        pending = [r for _, r in ops.run_records(site.STATE)
+    with ops.host_lock(state), pin_restore_inputs(inputs):
+        site.check_certificate_idle(state)
+        pending = [r for _, r in ops.run_records(state)
                    if r["stage"] not in ("finished", "preflight-failed") or r.get("private_cleanup_pending")]
         require(not pending, "unfinished_backup_blocks_restore")
         record = ops.read_json(journal) if journal.exists() else None
+        if authority:
+            authority.check_record(record, backup_id)
+            if not (check_only or cancel):
+                require(record and "target" in record and record["stage"] in
+                        ("eligible", "stopping", "applying", "verified", "completed"), "restore_web_preflight_required")
         if operation is not None:
             require(ops.ID.fullmatch(operation) and record and record["operation"] == operation
                     and record["stage"] != "rejected", "restore_confirmation_operation_changed")
@@ -159,26 +181,28 @@ def restore(backup_id, identity_role, *, check_only=False, cancel=False, status=
             require(record is not None and record["stage"] in ("preflight", "eligible", "rejected")
                     and record["project"] == project and record["backup_id"] == backup_id
                     and record["identity_role"] == identity_role, "restore_cancellation_not_applicable")
-            if identity_role == "restore_identity":
-                remove_transfer_key(docker, project)
+            release_key()
             record["stage"] = "rejected"
             ops.save_json(journal, record)
             return {"cancelled": True, "operation_id": record["operation"]}
         if record and record["stage"] == "completed":
             require(record["project"] == project and record["backup_id"] == backup_id, "target_already_restored")
             if not check_only and (identity_role == "restore_identity" or record["identity_role"] == "restore_identity"):
-                remove_transfer_key(docker, project)
+                release_key()
                 if not record.get("transfer_key_removed"):
                     record["transfer_key_removed"] = True
                     ops.save_json(journal, record)
             return {**record["result"], "already_restored": True}
 
         try:
-            selected = RestoreInput(site.RESTORE_INPUT / backup_id, backup_id)
+            selected = RestoreInput(inputs / backup_id, backup_id)
         except Exception:
             if identity_role == "restore_identity" and (record is None or record["stage"] == "rejected"):
-                remove_transfer_key(docker, project)
+                release_key()
             raise
+        if authority:
+            require(selected.bundle_hash == authority.manifest, "restore_web_manifest_changed")
+            authority.check_key()
         if record is None or record["stage"] == "rejected":
             original = bindings.services(profile, docker)
             bindings.check_run(profile, docker, original, identity_role=identity_role)
@@ -186,6 +210,8 @@ def restore(backup_id, identity_role, *, check_only=False, cancel=False, status=
                       "bundle_sha256": selected.bundle_hash, "source": selected.options(),
                       "original": original, "identity_role": identity_role,
                       "stage": "preflight"}
+            if authority:
+                record["web_key_operation"] = authority.key_operation
             ops.save_json(journal, record)
         else:
             require(record["project"] == project and record["backup_id"] == backup_id
@@ -197,53 +223,92 @@ def restore(backup_id, identity_role, *, check_only=False, cancel=False, status=
         if record["stage"] == "preflight":
             try:
                 approval = job.run("preflight")
+                if authority:
+                    authority.check_target(approval["target"])
             except RecoveryError as error:
                 if error.code != "restore_worker_still_active":
                     record["stage"] = "rejected"
                     ops.save_json(journal, record)
-                    if identity_role == "restore_identity":
-                        remove_transfer_key(docker, project)
+                    release_key()
                 raise
             record.update(target=approval["target"], stage="eligible")
             ops.save_json(journal, record)
         elif record["stage"] == "eligible":
-            job.run("preflight" if check_only else "check-target")
+            try:
+                if authority and not check_only:
+                    now = bindings.services(profile, docker)
+                    require(all(now[r]["running"] == record["original"][r]["running"] for r in ops.SERVICES),
+                            "restore_original_service_state_changed")
+                job.run("preflight" if check_only else "check-target")
+            except RecoveryError as error:
+                if authority and error.code != "restore_worker_still_active":
+                    # No stop or SQL has been requested. A changed target invalidates this approval.
+                    record["stage"] = "rejected"
+                    ops.save_json(journal, record)
+                    release_key()
+                raise
+        if authority:
+            authority.check_target(record["target"])
         if check_only:
             require(record["stage"] == "eligible", "restore_started_use_original_operation")
             return {"eligible": True, "target": record["target"], "source": selected.options(),
-                    "full_decryption_verified": True, "operation_id": record["operation"]}
-        if record["stage"] != "verified":
-            record["stage"] = "stopping"
-            ops.save_json(journal, record)
-            stop_original(profile, docker, record["original"])
-            record["stage"] = "applying"
-            ops.save_json(journal, record)
-            try:
-                result = job.run("apply")
-            except RecoveryError as error:
-                # The worker observed this exact target's operation never started.
-                # A partial/uncertain SQL import keeps its services stopped.
-                if getattr(error, "before_writes", False):
-                    ops.restore_services(profile, docker, record["original"])
-                    record["stage"] = "rejected"
+                    "full_decryption_verified": True, "operation_id": record["operation"],
+                    "gift_count": selected.backup["details"]["fingerprint"]["tables"]["gift_records"]["rows"]}
+        lifecycle = authority.lifecycle(profile, record) if authority else nullcontext(docker)
+        with lifecycle as driver:
+            if authority and record.get("empty_release"):
+                # Saved before attempting to restart after a proven clean rejection. Never enter SQL here.
+                job.run("check-target")
+                authority.allow_resume(driver, record, "empty")
+                ops.restore_services(profile, driver, record["original"])
+                record["stage"] = "rejected"
+                ops.save_json(journal, record)
+                release_key()
+                raise RecoveryError("restore_rejected_before_writes")
+            if record["stage"] == "verified":
+                require(job.run("verify") == record["result"], "previous_restore_result_changed")
+            else:
+                verify_interrupted = authority is not None and record["stage"] == "applying"
+                if not verify_interrupted:
+                    record["stage"] = "stopping"
                     ops.save_json(journal, record)
-                    if identity_role == "restore_identity":
-                        remove_transfer_key(docker, project)
-                raise
-            require(result["target"] == record["target"] and result["full_database_and_app_files_verified"] is True,
-                    "restored_target_unverified")
-            record.update(stage="verified", result=result)
+                    stop_original(profile, driver, record["original"])
+                    if authority:
+                        authority.finish_observing(driver)
+                    record["stage"] = "applying"
+                    ops.save_json(journal, record)
+                # The host can recover a completed SQL commit after interruption by proof only.
+                # It never issues a second apply for a journal already marked as applying.
+                try:
+                    result = job.run("verify" if verify_interrupted else "apply")
+                except RecoveryError as error:
+                    if getattr(error, "before_writes", False) and not verify_interrupted:
+                        if authority:
+                            record["empty_release"] = True
+                            ops.save_json(journal, record)
+                            authority.allow_resume(driver, record, "empty")
+                        ops.restore_services(profile, driver, record["original"])
+                        record["stage"] = "rejected"
+                        ops.save_json(journal, record)
+                        release_key()
+                    raise
+                require(result["target"] == record["target"] and result["full_database_and_app_files_verified"] is True,
+                        "restored_target_unverified")
+                if authority:
+                    authority.check_result(result, record, selected)
+                record.update(stage="verified", result=result)
+                ops.save_json(journal, record)
+            if authority:
+                authority.check_result(record["result"], record, selected)
+                authority.allow_resume(driver, record, "verified")
+            ops.restore_services(profile, driver, record["original"])
+            record["stage"] = "completed"
             ops.save_json(journal, record)
-        else:
-            require(job.run("verify") == record["result"], "previous_restore_result_changed")
-        ops.restore_services(profile, docker, record["original"])
-        record["stage"] = "completed"
-        ops.save_json(journal, record)
-        if identity_role == "restore_identity":
-            remove_transfer_key(docker, project)
-            record["transfer_key_removed"] = True
-            ops.save_json(journal, record)
-        return record["result"]
+            if identity_role == "restore_identity":
+                release_key()
+                record["transfer_key_removed"] = True
+                ops.save_json(journal, record)
+            return record["result"]
 
 
 if __name__ == "__main__":

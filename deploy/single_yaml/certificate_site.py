@@ -326,7 +326,7 @@ def print_status(result):
         elif datetime.fromisoformat(result["not_after"]) <= now:
             print("网站证书已到期。请执行本站维护说明中的证书续签命令，然后重新打开原网址。")
         elif certificate_auto.renewal_due(result["not_after"], now):
-            print(f"网站证书将在 {certificate_auto.RENEW_BEFORE.days} 天内到期。请检查群晖自动续签任务的运行结果，或执行本站维护说明中的证书续签命令。")
+            print(f"网站证书将在 {certificate_auto.RENEW_BEFORE.days} 天内到期。请检查本站自动续签任务的运行结果，或执行本站维护说明中的证书续签命令。")
     print(json.dumps(result, ensure_ascii=False))
 
 

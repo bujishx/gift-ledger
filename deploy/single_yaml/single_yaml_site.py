@@ -1,6 +1,7 @@
 """Initialize an owner-selected private site directory using the existing S011 installer."""
 
 import configparser
+from contextlib import contextmanager
 import ipaddress
 import json
 import os
@@ -51,6 +52,57 @@ def create_private_directory(path):
             os.removexattr(path, acl, follow_symlinks=False)
     if stat.S_IMODE(path.lstat().st_mode) != 0o700:
         raise SiteError("新建的私有目录权限不符，请检查站点目录")
+
+
+def prepare_maintenance_mounts():
+    """DSM requires all API bind sources to exist before starting the API."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+    @contextmanager
+    def child(parent, name, owners):
+        try:
+            fd = os.open(name, flags, dir_fd=parent)
+            created = False
+        except FileNotFoundError:
+            try:
+                os.mkdir(name, 0o700, dir_fd=parent)
+                created = True
+            except FileExistsError:
+                created = False
+            fd = os.open(name, flags, dir_fd=parent)
+        try:
+            info = os.fstat(fd)
+            if info.st_uid not in owners or (created and (info.st_uid != 0 or os.listdir(fd))):
+                raise SiteError("本站维护挂载目录的所有者或内容异常")
+            if created:
+                # DSM can inherit a share ACL even when mkdir requested 0700.
+                os.fchmod(fd, 0o700)
+                for attr in os.listxattr(fd):
+                    if attr in {"system.posix_acl_access", "system.posix_acl_default"}:
+                        os.removexattr(fd, attr)
+                if stat.S_IMODE(os.fstat(fd).st_mode) != 0o700 or any("acl" in v.lower() for v in os.listxattr(fd)):
+                    raise SiteError("新建的本站维护挂载目录含额外授权")
+                os.fsync(parent)
+            yield fd
+            current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                raise SiteError("本站维护挂载目录在启动时发生变化")
+        finally:
+            os.close(fd)
+
+    station = os.open(DATA.parent, flags)
+    try:
+        with child(station, ".giftledger-maintenance", {0}) as ipc:
+            names = os.listdir(ipc)
+            if names and "requests" not in names:
+                raise SiteError("已有维护目录缺少请求文件夹，请核对本站资料")
+            with child(ipc, "requests", {0}):
+                pass
+        # After host enrollment the existing owner store belongs to the API.
+        with child(station, ".giftledger-owner", {0, 10001}):
+            pass
+    finally:
+        os.close(station)
 
 
 def check_directory():
@@ -149,7 +201,8 @@ def publish_guide(project, url, identity, *, refresh=False):
             # A corrupt cache never prevents opening the site or host rediscovery.
             pass
     text = owner_guide.render(project, url, identity, project_dir=str(directory or ""),
-                              site_dir=str(station or "."), config_file=str(config or ""))
+                              site_dir=str(station or "."), config_file=str(config or ""),
+                              owner_login=os.environ.get("GIFTLEDGER_OWNER_MAINTENANCE_GUIDE") == "1")
     publish_public(owner_guide.FILENAME, text.encode())
 
 
@@ -179,6 +232,10 @@ def main():
             },
         )
         identity = json.loads((DATA / "root_config/site/control/identity.json").read_bytes())
+        if os.environ.get("GIFTLEDGER_OWNER_MAINTENANCE_GUIDE") == "1":
+            if identity.get("project") != project:
+                raise SiteError("本站维护挂载的项目与站点身份不符")
+            prepare_maintenance_mounts()
         if "profile" in identity["tls"]:
             from cryptography import x509
             from cryptography.hazmat.primitives.serialization import Encoding

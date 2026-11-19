@@ -1,6 +1,7 @@
 """Exercise the release images on a disposable Linux runner."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import secrets
@@ -108,6 +109,30 @@ def wait_ready(compose, env, url, ca):
         time.sleep(2)
 
 
+def verify_backup_age(compose, env):
+    # The selected release source may predate the native desktop tools.
+    if not (ROOT / "deploy/single_yaml/native_age.py").is_file():
+        return
+    from native_age import AGE_VERSION
+
+    config = subprocess.check_output(
+        [*compose, "--profile", "maintenance", "config", "--format", "json"],
+        env=env, timeout=30,
+    )
+    image = json.loads(config)["services"]["backup"]["image"]
+    for tool in ("age", "age-keygen"):
+        version = subprocess.check_output(
+            ["docker", "run", "--rm", "--pull=never", "--platform", "linux/amd64",
+             "--network", "none", "--read-only", "--cap-drop", "ALL",
+             "--security-opt", "no-new-privileges", "--tmpfs", "/var/lib/mysql",
+             "--entrypoint", "/usr/local/bin/" + tool, image, "--version"],
+            text=True, env=env, timeout=60,
+        ).strip()
+        if version != "v" + AGE_VERSION:
+            raise RuntimeError(f"Backup image {image}: {tool} reported {version!r}, expected v{AGE_VERSION}")
+        print(f"Backup image {tool} {version}", flush=True)
+
+
 def enroll(compose, env, work):
     folder = work / "exchange"
     folder.mkdir(mode=0o700)
@@ -200,6 +225,7 @@ def smoke(yaml, pull):
             compose("--profile", "maintenance", "config", "--quiet")
             if pull:
                 compose("--profile", "maintenance", "pull")
+            verify_backup_age(cmd, env)
             compose("up", "-d")
             url = "https://127.0.0.1:16443"
             ca = station / "data/本站根证书.cer"

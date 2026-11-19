@@ -180,6 +180,8 @@ def enroll(restore):
     os.umask(0o077)
     project = os.environ["GIFTLEDGER_PROJECT"]
     instance = keys.project_identity(project)
+    expected = os.environ.get("GIFTLEDGER_EXPECTED_INSTANCE")
+    keys.require(expected is None or instance == expected, "unexpected-enrollment-instance")
     from initialize import existing_state, json_file
     control = keys.ROOT / "site/control"
     _, identity_hash = json_file(control / "identity.json")

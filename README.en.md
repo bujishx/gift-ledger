@@ -2,16 +2,16 @@
 
 A self-hosted gift ledger for your LAN or VPN. The initial release supports Linux/amd64 on Ubuntu and Synology Container Manager. [简体中文](README.md)
 
-Installation instructions cover both Ubuntu and Synology. The backup, recovery and certificate maintenance steps below have been tested on Synology DSM. Instructions for the updated Ubuntu workflows will follow testing on an Ubuntu host.
-
 ## Install
 
-Download the [docker-compose.yml](https://github.com/bujishx/gift-ledger/releases/latest/download/docker-compose.yml) into a dedicated empty folder. Set the LAN IP and an available HTTPS port at the top of the file, for example `192.168.1.20` and `8443`. Your server needs access to Docker Hub on first installation.
+Download the [docker-compose.yml](https://github.com/bujishx/gift-ledger/releases/latest/download/docker-compose.yml) into a dedicated empty folder. Set the LAN IP and an available HTTPS port at the top of the file, for example `192.168.1.20` and `8443`. For online installations the server must be able to pull the pinned images. For an offline candidate, verify and import the supplied images according to the package instructions and use the YAML supplied in that same package.
 
-- **Ubuntu** With Docker Engine and the Compose plugin installed, run `docker compose up -d` in that folder.
-- **Synology** Put the YAML in a folder such as `/volume1/docker/gift-ledger`. In Container Manager, open **Project → Create**, use the project name `gift-ledger`, select the folder and use its existing YAML.
+- **Ubuntu** Set the project name in the top-level `name:` field. With Docker Engine and the Compose plugin installed, run `docker compose up -d` in that folder.
+- **Synology** In File Station, create a dedicated empty folder such as `/volume1/docker/gift-ledger-family` and put the YAML there. In Container Manager, open **Project → Create**, enter a project name, select that folder and use its existing YAML. You can choose the folder name. Setting `name:` in the YAML to match the Synology project name makes it easier to manage the site from a terminal later.
 
-Open `data/网站地址.txt` for the URL and `data/本站维护说明.txt` for the site's project name, instance and ready-to-copy maintenance commands. If the host project folder is missing, run the complete “查看本站目录” block on the server and reopen the file.
+For a second independent site on the same host, choose a different project name, another available HTTPS port and a separate empty folder. Both sites can use the same LAN IP. By default each site's data and backups are stored under its own folder.
+
+Open `data/网站地址.txt` for the URL and `data/本站维护说明.txt` for the site's project name, instance and ready-to-copy maintenance commands. In an administrator terminal on the server, copy the full command under “启用本站网页维护（每站一次）”. Wait for “本站维护服务已就绪”. On Ubuntu this enables startup at boot. On DSM save the per-site boot task shown in the same section.
 
 Transfer `data/本站根证书.cer` to your phone or Mac and compare its SHA-256 fingerprint before trusting it. The “核对公开根证书” block reads the Docker log over SSH and checks the certificate file on the server, including when the DSM log viewer is empty. A second download may have `(1)` in the filename. Match the fingerprint. Connect to your LAN or VPN, open the site, register, finish your profile and record a gift.
 
@@ -19,21 +19,22 @@ On a Mac, import the root certificate whose fingerprint you verified into your l
 
 Restart the server and confirm the same account still shows that gift. Contact the site owner if you forget your login name or password. The installed YAML pins the image digests, so the site owner chooses when to upgrade.
 
-## Back up
+## Back up and restore in a browser
 
-1. **Enroll a key before the site's first backup.** Whether you started a ledger from scratch or restored it from an old backup, follow “第一次备份前登记钥匙” in that site's notes. Open the enrollment menu in the matching [Windows tools](https://github.com/bujishx/gift-ledger/releases/latest/download/windows-site-tools.zip) or run the enrollment command in the [Mac tools](https://github.com/bujishx/gift-ledger/releases/latest/download/mac-site-tools.zip). The tool shows both options. Choose **登记旧钥匙** to enroll the original `.agekey` file you already keep, or **生成新钥匙并登记** to create and enroll a new key. If enrollment was interrupted after a key was created, run the same tool again, choose **登记旧钥匙**, and select that file. Keep the original key separately once enrollment succeeds.
-2. **Run a manual backup on Synology.** Copy the complete “手动备份” command block from the site's notes. In DSM, create a user-defined script in **Control Panel → Task Scheduler**, select root, turn off the schedule, paste the block, save, then select **Run**.
-3. **Verify and keep a copy.** When the tool confirms decryption, copy the entire five-file backup folder to another device and check the last entry and totals on your site.
+1. **Sign in as the site owner.** Open the address ending in `/maintenance` in a Windows, Mac or Ubuntu desktop browser. It uses the same IP and port as the ledger. Run the command under “站主维护登录码” in the server's administrator terminal, check the project and URL and enter the short-lived code. You can also set an owner password or reset it using a fresh code.
+2. **Enroll a key for this site's backups.** Both a site started from scratch and a site restored from an old backup offer “登记旧钥匙” (enroll an existing key) and “生成新钥匙并登记” (generate and enroll a new key). Select the original key file on your computer or USB drive, such as `identity.txt` or an `.agekey` file. For a new key, download it and select the saved file. Confirm and wait for “本站备份钥匙登记通过”.
+3. **Start a backup.** Choose “开始备份”. The site briefly goes offline. Return to the same page, choose “查看备份结果”, and download the verified ZIP. Store the ZIP and its original key separately. Sign in to the ledger and check the last transaction and totals.
+4. **Restore an old backup to a separate, empty site.** Use a different project name, empty directory and available port. Before registering any account, open the **target** site's maintenance page, select the source backup and its matching original key, and choose “上传并预检”. Check the source, entry count, target URL and project before entering “恢复” and confirming. Use the original account to check the restored ledger. For the first daily backup of the site restored from the old backup, enroll your choice of the same key or a new one. [Recovery guide](docs/从备份恢复.md)
 
-**Restore the old site's backup to a new site from Windows or Mac.** Start a separate empty site and leave it without any registered accounts. Open `data/本站维护说明.txt` on the **new site**. Under “恢复到本站”, copy the command for your computer and run it from the matching site tools directory. It includes the new site's HTTPS URL, project name and paths. On Windows you can also double-click `GiftLedger.cmd`, select recovery and copy the full URL from the new site's `网站地址.txt`. Choose the **old site's backup** and **the original key for that backup**. The tool checks the target address and HTTPS port before asking you to confirm the restore. [Full recovery instructions](docs/从备份恢复.md)
-
-**Keep using the site you restored from the old backup.** Before this site's first backup, choose whether to enroll the same key you used to restore the old backup or generate and enroll a new key. If this site already has a key enrolled, go straight to “手动备份” in its own notes. Keep the original `.agekey` file that matches each backup. [Back up the site restored from an old backup](docs/从备份恢复.md#用旧备份恢复的新站今后怎样备份)
+If the site stays offline, use the command under “网页暂时打不开时查看本站维护任务” in its server-side maintenance notes. Use the original operation ID to check the job and follow the recovery instructions. The notes also include terminal backup commands and optional same-version desktop tools for enrollment and restoration. [Mac tools](https://github.com/bujishx/gift-ledger/releases/latest/download/mac-site-tools.zip) · [Windows tools](https://github.com/bujishx/gift-ledger/releases/latest/download/windows-site-tools.zip)
 
 The Synology manual backup supports Container Manager 24.0.2-1543 and 24.0.2-1606. It checks the package files at startup. If this check returns `CM_vendor_file_set_unreviewed`, the task exits before stopping the site. Report the Container Manager version shown in Package Center and the run result from Task Scheduler.
 
 ## Certificate expiry and renewal
 
 New and renewed website HTTPS certificates are valid for **365 days**. Existing certificates keep their original expiry until renewal. Run “查看证书有效期” in `data/本站维护说明.txt` to see the expiry dates of the website certificate and the site's root certificate.
+
+**On Ubuntu**, enabling web maintenance installs a timer for this site. It checks the certificate daily at 03:15 in the server’s time zone. See “Ubuntu 自动续签网站证书” in the maintenance notes for the next scheduled check and last result.
 
 **On Synology DSM, set up a daily task once per site.** Follow “群晖自动续签网站证书” in the maintenance notes to create and enable the task, for example at 03:15 each day. It renews the website certificate when 30 days or less remain. The website goes offline briefly during renewal. If DSM email notifications are configured, you can opt to receive task details only on failure. For immediate renewal on DSM, run “续签本站 HTTPS 证书”, then open the original URL and verify the new expiry date. [Synology Task Scheduler](https://kb.synology.com/en-ca/DSM/help/DSM/AdminCenter/system_taskscheduler?version=7)
 

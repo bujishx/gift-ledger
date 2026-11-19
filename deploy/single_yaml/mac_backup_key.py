@@ -28,6 +28,12 @@ RECIPIENT = re.compile(r"age1[023456789acdefghjklmnpqrstuvwxyz]{58}")
 SHA = re.compile(r"[0-9a-f]{64}")
 OP = re.compile(r"[0-9a-f]{32}")
 SSH_HOST = re.compile(r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}@)?[A-Za-z0-9][A-Za-z0-9_.-]{0,252}")
+OFFICIAL_BACKUP_IMAGE = re.compile(r"(?:docker\.io/)?zhjido/giftledger-backup(?::[\w.-]+)?@sha256:[0-9a-f]{64}")
+START_DOCKER = "无法连接本机 Docker 引擎。请启动 Docker Desktop 并确认当前账号有权使用，再运行本站命令。"
+AGE_PROGRAMS = ("age", "age-keygen")
+MACH_O = {bytes.fromhex(value) for value in ("feedface", "cefaedfe", "feedfacf", "cffaedfe",
+                                             "cafebabe", "bebafeca", "cafebabf", "bfbafeca")}
+DOCKER_CHOICE = "输入 D 使用本机 Docker（若缺本站版本的备用镜像将下载较大的镜像）"
 
 
 class EnrollmentError(ValueError):
@@ -47,49 +53,139 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def desktop_executables(name, extra_dirs=()):
+    # Use absolute PATH entries only. Windows otherwise implicitly searches the
+    # current directory and PATHEXT may select batch scripts from the unpacked ZIP.
+    windows = sys.platform == "win32"
+    current = Path.cwd()
+    for entry in (*os.get_exec_path(), *extra_dirs):
+        directory = Path(str(entry).strip('"'))
+        if not directory.is_absolute() or (windows and directory.drive.startswith("\\\\")):
+            continue
+        candidate = directory / (name + ".exe" if windows else name)
+        try:
+            if not candidate.is_file() or not os.access(candidate, os.X_OK):
+                continue
+            resolved = candidate.resolve(strict=True)
+            if resolved.parent == current or directory.resolve() == current or (windows and resolved.drive.startswith("\\\\")):
+                continue
+            with resolved.open("rb") as program:
+                header = program.read(4)
+            native = header.startswith(b"MZ") if windows else header in MACH_O
+            if native:
+                yield str(resolved)
+        except (OSError, RuntimeError):
+            continue
+
+
+def installed_age_programs(version):
+    programs = {}
+    for name in AGE_PROGRAMS:
+        for path in desktop_executables(name):
+            try:
+                check_version = subprocess.run([path, "--version"], stdin=subprocess.DEVNULL,
+                                               capture_output=True, timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if check_version.returncode == 0 and check_version.stdout.strip() == version.encode("ascii"):
+                programs[name] = path
+                break
+    return programs if len(programs) == len(AGE_PROGRAMS) else {}
+
+
+def desktop_age_programs():
+    import native_age
+
+    programs = installed_age_programs(native_age.VERSION)
+    if programs:
+        return programs, False
+    try:
+        programs = native_age.cached_programs()
+        if programs:
+            return programs, False
+        if not sys.stdin.isatty():
+            return {}, False
+        choice = read_selection(f"本机缺少 age 和 age-keygen {native_age.VERSION}。"
+                                f"按回车下载并核验两个原生工具，{DOCKER_CHOICE}，输入 q 退出：").casefold()
+        if choice == "":
+            return native_age.install_programs(), False
+    except native_age.NativeAgeError as error:
+        print(f"原生工具未就绪。{error}", file=sys.stderr, flush=True)
+        if not sys.stdin.isatty():
+            return {}, False
+        choice = read_selection(f"{DOCKER_CHOICE}，或按回车退出：").casefold()
+    check(choice == "d", "已退出本次操作。")
+    return {}, True
+
+
 class Age:
     def __init__(self):
-        self.programs = {name: shutil.which(name) for name in ("age", "age-keygen")}
-        self.docker = shutil.which("docker")
-        if sys.platform == "darwin" and not self.docker:
-            desktop = (Path.home() / ".docker/bin/docker", Path("/Applications/Docker.app/Contents/Resources/bin/docker"))
-            self.docker = next((str(path) for path in desktop if path.is_file() and os.access(path, os.X_OK)), None)
+        self.image = None
+        self.docker_env = {k: v for k, v in os.environ.items() if k not in
+                           {"DOCKER_CONTEXT", "DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"}}
+        desktop = sys.platform in ("darwin", "win32")
+        if desktop:
+            self.programs, allow_pull = desktop_age_programs()
+        else:
+            local = {name: shutil.which(name) for name in AGE_PROGRAMS}
+            self.programs = local if all(local.values()) else {}
+            allow_pull = False
+        if self.programs:
+            return
+
+        if desktop:
+            extra = ()
+            if sys.platform == "darwin":
+                extra = (Path.home() / ".docker/bin", Path("/Applications/Docker.app/Contents/Resources/bin"))
+            self.docker = next(desktop_executables("docker", extra), None)
+        else:
+            self.docker = shutil.which("docker")
         if os.name == "nt":
             self.endpoint = "npipe:////./pipe/docker_engine"
         else:
             socket = next((p for p in (Path.home() / ".docker/run/docker.sock", Path("/var/run/docker.sock"))
                            if p.exists() and stat.S_ISSOCK(p.stat().st_mode)), None)
             self.endpoint = "unix://" + str(socket) if socket else None
-        self.docker_env = {k: v for k, v in os.environ.items() if k not in
-                           {"DOCKER_CONTEXT", "DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"}}
-        self.image = None
-        if not all(self.programs.values()) and self.docker and self.endpoint:
-            check(RELEASE_YAML.is_file(), "请将站主工具与同一版本的 docker-compose.yml 放在一起。")
-            docker = [self.docker, "--host", self.endpoint]
-            config = subprocess.run([*docker, "compose", "-f", str(RELEASE_YAML), "--profile", "maintenance",
-                                     "config", "--format", "json"],
-                                    capture_output=True, timeout=20, env=self.docker_env)
-            check(config.returncode == 0, "无法读取同一发行件中的 docker-compose.yml。")
-            services = json.loads(config.stdout)["services"]
-            tag = services["backup-key"]["image"]
-            check(tag == services["backup"]["image"] and not tag.endswith(":latest") and
-                  re.fullmatch(r"[a-z0-9][a-z0-9./:_-]+(?::[A-Za-z0-9_.-]+|@sha256:[a-f0-9]{64})", tag),
-                  "此版本的 YAML 缺少一致、固定的备份镜像。")
-            inspect_image = [*docker, "image", "inspect", "--format", "{{.Id}}", tag]
+        check(self.docker and self.endpoint, "本机缺少所需的原生工具或已就绪的 Docker。"
+              "请在 Mac 或 Windows 终端运行本站命令以安装原生工具，使用备用镜像时请先启动本机 Docker。")
+        check(RELEASE_YAML.is_file(), "请将站主工具与同一版本的 docker-compose.yml 放在一起。")
+        docker = [self.docker, "--host", self.endpoint]
+        config = subprocess.run([*docker, "compose", "-f", str(RELEASE_YAML), "--profile", "maintenance",
+                                 "config", "--format", "json"], capture_output=True, timeout=20, env=self.docker_env)
+        check(config.returncode == 0, "无法读取同一发行件中的 docker-compose.yml。")
+        services = json.loads(config.stdout)["services"]
+        tag = services["backup-key"]["image"]
+        check(tag == services["backup"]["image"] and not tag.endswith(":latest") and
+              re.fullmatch(r"[a-z0-9][a-z0-9./:_-]+(?::[A-Za-z0-9_.-]+|@sha256:[a-f0-9]{64})", tag),
+              "此版本的 YAML 缺少一致、固定的备份镜像。")
+        inspect_image = [*docker, "image", "inspect", "--format", "{{.Id}}", tag]
+        result = subprocess.run(inspect_image, capture_output=True, timeout=15, env=self.docker_env)
+        if result.returncode and allow_pull:
+            self.download_backup_image(docker, tag, result.stderr)
             result = subprocess.run(inspect_image, capture_output=True, timeout=15, env=self.docker_env)
-            if os.name == "nt" and result.returncode and re.fullmatch(
-                    r"(?:docker.io/)?zhjido/giftledger-backup(?::[\w.-]+)?@sha256:[0-9a-f]{64}", tag):
-                print("正在为本台 Windows 下载本发行版的备份工具镜像。", flush=True)
-                subprocess.run([*docker, "pull", "--platform", "linux/amd64", tag],
-                               env=self.docker_env, timeout=600, check=True)
-                result = subprocess.run(inspect_image, capture_output=True, timeout=15, env=self.docker_env)
-            if result.returncode == 0 and re.fullmatch(rb"sha256:[0-9a-f]{64}", result.stdout.strip()):
-                self.image = result.stdout.decode("ascii").strip()
-        check(all(self.programs.values()) or self.image,
-              "需要本机 age 和 age-keygen，或已运行的 Docker Desktop 与已载入的本站备份镜像。")
+        check(result.returncode == 0 and re.fullmatch(rb"sha256:[0-9a-f]{64}", result.stdout.strip()),
+              "本机 Docker 未能核实本发行版的备份镜像。请确认引擎与镜像已就绪，或在终端运行本站命令选择下载。")
+        self.image = result.stdout.decode("ascii").strip()
+
+    def download_backup_image(self, docker, tag, inspect_error):
+        try:
+            engine = subprocess.run([*docker, "info"], capture_output=True, timeout=15, env=self.docker_env)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise EnrollmentError(START_DOCKER) from exc
+        check(engine.returncode == 0, START_DOCKER)
+        check(b"no such image:" in inspect_error.lower(),
+              "Docker Desktop 已启动，但无法检查本机备份镜像。请核对 Docker 的访问权限后重试。")
+        check(OFFICIAL_BACKUP_IMAGE.fullmatch(tag),
+              "工具包中的镜像与官方固定摘要格式不符。请从本站对应的发行版本重新下载站主工具。")
+        print("正在下载本版本备用镜像，以下为 Docker 的下载进度。", flush=True)
+        try:
+            subprocess.run([*docker, "pull", "--platform", "linux/amd64", tag],
+                           env=self.docker_env, timeout=600, check=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise EnrollmentError("备用镜像下载未完成。请核对到 Docker Hub 的网络及上方 Docker 提示，再运行本站命令。") from exc
 
     def run(self, name, args=(), data=None):
-        if all(self.programs.values()):
+        if self.programs:
             command = [self.programs[name], *args]
         else:
             # Force a local Desktop socket. A remote Docker context cannot receive a key.
@@ -169,7 +265,7 @@ def identity(raw, age):
     return secret, recipient
 
 
-def target_info(raw, project):
+def target_info(raw, project, expected_instance=None):
     obj = json.loads(raw)
     target = obj["target"]
     check(type(obj.get("registered")) is bool and
@@ -181,6 +277,8 @@ def target_info(raw, project):
           "网站身份或交接公钥校验失败。")
     started = {k: target[k] for k in ("format", "project", "instance_id", "operation_id", "started_at")}
     check(digest(encoded(started)) == target["started_sha256"], "网站交接回执摘要不符。")
+    if expected_instance is not None:
+        check(target["instance_id"] == expected_instance, "服务器返回的站点实例与本站维护说明不符，钥匙登记已停止。")
     return target, obj["registered"]
 
 
@@ -297,12 +395,16 @@ def enrollment_path(args):
             return path, True
 
 
-def remote_args(host, project_dir, project):
+def remote_target(host, project):
     check(SSH_HOST.fullmatch(host),
           "请填写 SSH 用户名和主机地址，例如 admin@192.168.1.20。")
+    check(re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", project), "项目名不符合 Compose 规则。")
+
+
+def remote_args(host, project_dir, project):
+    remote_target(host, project)
     check(project_dir.startswith("/") and not re.search(r"[\x00-\x1f\x7f:]", project_dir)
           and ".." not in project_dir.split("/"), "请输入服务器上项目的绝对路径。")
-    check(re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", project), "项目名不符合 Compose 规则。")
 
 
 def add_site_options(parser):
@@ -447,6 +549,36 @@ def sudo_command(command, purpose):
     return "sudo -p \"$(printf '" + encoded_prompt + "')\" " + command
 
 
+def enrollment_worker_command(args, scratch_name):
+    docker = ('d=/var/packages/ContainerManager/target/usr/bin/docker; '
+              'if [ ! -x "$d" ]; then d=$(command -v docker) || exit 1; fi; ')
+    service = "restore-key" if args.restore_key else "backup-key"
+    options = ["run", "--rm", "-T", "--no-deps", "-v", scratch_name + ":/work/exchange", service]
+    if args.project_dir is None:
+        from owner_guide import host_setup
+
+        address, port = site_endpoint(args.site_url)
+        url = f"https://{address}" + (f":{port}" if port != 443 else "") + "/"
+        # Inspect and run under the same privilege grant. Host paths stay quoted
+        # shell arguments on the server, including paths with spaces and quotes.
+        script = ("set -eu\n" + host_setup(args.project, None, None, None) + "\n"
+                  'file="$station/data/网站地址.txt"\n'
+                  f'[ -f "$file" ] && [ ! -L "$file" ] && [ "$(cat "$file")" = {shlex.quote(url)} ] || '
+                  '{ echo "找到的项目网址与本站维护说明不符，请核对站点。" >&2; exit 1; }\n'
+                  'cd "$dir"\n'
+                  'exec /usr/bin/env GIFTLEDGER_PROJECT_DIR="$dir" GIFTLEDGER_SITE_DIR="$station" '
+                  f'GIFTLEDGER_SITE_IP={address} GIFTLEDGER_HTTPS_PORT={port} '
+                  '"$d" compose --project-directory "$dir" -f "$cfg" -p "$p" ' + shlex.join(options))
+        launch = "/bin/sh -c " + shlex.quote(script)
+        purpose = "查找本站目录并登记备份钥匙"
+    else:
+        docker = "cd " + shlex.quote(args.project_dir) + " || exit 1; " + docker
+        launch = compose_command(args, options)
+        purpose = "登记本站恢复用临时钥匙" if args.restore_key else "登记本站备份钥匙"
+    return (docker + "set -- " + launch + '; if "$d" info >/dev/null 2>&1; then exec "$@"; else exec '
+            + sudo_command('"$@"', purpose) + "; fi")
+
+
 def exchange(channel, args, secret, recipient, age):
     with ssh_output(args.host, terminal=True) as streams:
         return _exchange(channel, args, secret, recipient, age, streams)
@@ -454,6 +586,8 @@ def exchange(channel, args, secret, recipient, age):
 
 def _exchange(channel, args, secret, recipient, age, streams):
     host = args.host
+    if args.project_dir is None:
+        print(f"正在查找项目 {args.project} 的服务器目录，并核对本站网址及实例。", file=sys.stderr, flush=True)
     scratch = run(channel, host, "umask 077 && mktemp -d /tmp/giftledger-key-XXXXXXXX")
     scratch_name = scratch.stdout.decode("ascii").strip()
     check(scratch.returncode == 0 and re.fullmatch(r"/tmp/giftledger-key-[A-Za-z0-9]{8}", scratch_name),
@@ -461,14 +595,7 @@ def _exchange(channel, args, secret, recipient, age, streams):
     cd = "cd " + shlex.quote(scratch_name) + " && "
     worker = None
     try:
-        docker = ('d=/var/packages/ContainerManager/target/usr/bin/docker; '
-                  'if [ ! -x "$d" ]; then d=$(command -v docker) || exit 1; fi; ')
-        cmd = 'cd ' + shlex.quote(args.project_dir) + ' || exit 1; ' + docker
-        service_name = 'restore-key' if args.restore_key else 'backup-key'
-        service = compose_command(args, ["run", "--rm", "-T", "--no-deps", "-v",
-                                         scratch_name + ":/work/exchange", service_name])
-        purpose = "登记本站恢复用临时钥匙" if args.restore_key else "登记本站备份钥匙"
-        cmd += 'if "$d" info >/dev/null 2>&1; then exec ' + service + '; else exec ' + sudo_command(service, purpose) + '; fi'
+        cmd = enrollment_worker_command(args, scratch_name)
         worker = subprocess.Popen([*channel, terminal_option(channel), host, cmd], **streams)
 
         def read_when_ready(name):
@@ -496,7 +623,7 @@ def _exchange(channel, args, secret, recipient, age, streams):
                     reader.terminate()
                     reader.communicate()
 
-        target, registered = target_info(read_when_ready("target.json"), args.project)
+        target, registered = target_info(read_when_ready("target.json"), args.project, getattr(args, "instance_id", None))
         packet = None
         if not registered:
             packet = packet_for(target, secret, recipient, age)
@@ -528,15 +655,29 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", required=True, help="SSH 用户名@服务器")
     parser.add_argument("--port", type=int, default=22, help="SSH 端口")
-    parser.add_argument("--project-dir", required=True, help="服务器上单份 YAML 所在目录")
-    parser.add_argument("--project", default="gift-ledger", help="Container Manager 或 Compose 中的项目名")
+    parser.add_argument("--project-dir", help="服务器上单份 YAML 所在目录。省略时按本站说明中的项目、网址和实例自动查找")
+    parser.add_argument("--project", help="Container Manager 或 Compose 中的项目名")
+    parser.add_argument("--instance-id", help="自动查找目录时核对的本站实例 ID")
     add_site_options(parser)
     parser.add_argument("--restore-key", action="store_true", help="将源备份的原钥仅用于目标站这次恢复")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--key", type=Path, help="直接指定已有 age 私钥文件。未指定方式时，首次登记会提示选择旧钥匙或新钥匙")
     group.add_argument("--generate", type=Path, metavar="FILE", help="在 Mac 本地生成一把原钥匙，新文件必须尚不存在")
     args = parser.parse_args()
-    remote_args(args.host, args.project_dir, args.project)
+    if args.project_dir is None:
+        check(args.project and args.site_url and args.instance_id,
+              "自动查找目录需要本站维护说明中的项目名、网址和实例 ID，请复制完整的 Mac 登记命令。")
+        check(args.compose_file is None and args.site_dir is None and not args.restore_key,
+              "自动查找目录仅用于首次日常备份钥匙登记，请复制本站维护说明中的完整命令。")
+        remote_target(args.host, args.project)
+        site_endpoint(args.site_url)
+        check(re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", args.instance_id),
+              "本站实例 ID 无效，请复制本站维护说明中的完整命令。")
+    else:
+        check(args.instance_id is None, "请使用自动查找目录的登记命令，或使用已经填好完整路径的登记命令。")
+        if args.project is None:
+            args.project = "gift-ledger"
+        remote_args(args.host, args.project_dir, args.project)
     check(1 <= args.port <= 65535, "SSH 端口无效。")
     check(not (args.restore_key and args.generate), "恢复须选择源备份对应的已有原钥匙。")
     path, generate = enrollment_path(args)

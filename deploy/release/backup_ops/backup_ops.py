@@ -1343,6 +1343,7 @@ def run(
     docker=None,
     worker_factory=Worker,
     session_id=None,
+    new_session_id=None,
     schedule_authorized=False,
     site_bindings=None,
 ):
@@ -1351,6 +1352,8 @@ def run(
     profile = validate_profile(profile) if site_bindings is None else site_bindings.validate(profile)
     assert_no_schema_update_hold(profile)
     require(mode in ("manual", "scheduled", "recover"), "run_mode_invalid")
+    require(new_session_id is None or (mode == "manual" and site_bindings is not None
+            and isinstance(new_session_id, str) and ID.fullmatch(new_session_id)), "invalid_new_backup_session")
     # Fail before directories, workers, leases or service stops. This release
     # supports traditional Windows path limits without changing host policy.
     if os.name == "nt":
@@ -1421,8 +1424,11 @@ def run(
                     all(original[s]["running"] for s in SERVICES),
                     "site_already_in_maintenance",
                 )
-            session_id = uuid4().hex
-            run_dir = mkdir(runs / session_id)
+            session_id = new_session_id or uuid4().hex
+            run_dir = runs / session_id
+            require(not os.path.lexists(run_dir), "backup_session_already_exists")
+            run_dir.mkdir(mode=0o700)
+            fsync_directory(runs)
             record = {
                 "format": "gift-ledger-backup-ops-run-v1",
                 "session_id": session_id,

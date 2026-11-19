@@ -7,13 +7,16 @@ REPO = Path(__file__).resolve().parents[2]
 SITE = REPO / 'deploy/single_yaml'
 CORE = REPO / 'deploy/release/backup_ops'
 SITE_FILES = ('dsm_backup.py', 'dsm_certificate.py', 'certificate_auto.py', 'certificate_policy.py', 'certificate_site.py',
-              'backup_site.py', 'single_yaml_site.py', 'owner_guide.py', 'service_images.json')
-CORE_FILES = ('backup_ops.py', 'backup_export.py', 'backup_store.py', 'windows_path_budget.py')
+              'backup_site.py', 'maintenance_enrollment.py', 'maintenance_restore.py', 'maintenance_restore_queue.py',
+              'restore_site.py', 'restore_input.py', 'restore_files.py', 'mac_restore_bundle.py', 'single_yaml_site.py', 'owner_guide.py', 'owner_login_code.py', 'service_images.json')
+CORE_FILES = ('backup_ops.py', 'backup_export.py', 'backup_store.py', 'windows_path_budget.py', 'restore_file_check.py')
 EVENT_FILES = ('__init__.py', 'target.py', 'catalog.py', 'io.py', 'adapter.py', 'provider.py', 'observer.py')
 
 
 def build(output):
     members = {name: (SITE / name).read_bytes() for name in SITE_FILES}
+    for protocol in ('maintenance_enrollment_protocol.py', 'maintenance_restore_protocol.py'):
+        members[protocol] = (REPO / 'backend/app/services' / protocol).read_bytes()
     members.update({name: (CORE / name).read_bytes() for name in CORE_FILES})
     for name in EVENT_FILES:
         members['dsm_events/' + name] = (CORE / 'dsm_events' / name).read_bytes()

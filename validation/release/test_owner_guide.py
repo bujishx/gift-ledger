@@ -197,6 +197,33 @@ class OwnerGuideTests(unittest.TestCase):
                 site.main()
             self.assertEqual(self.config.read_bytes(), b"")
 
+    def test_first_backup_section_explains_both_platforms_before_and_after_path_discovery(self):
+        runner = self.root / "python3"
+        runner.write_text('#!/bin/sh\nprintf \'%s\\n\' "$@" > "$TEST_CALL"\n')
+        runner.chmod(0o700)
+        for project_dir, config in ((None, None), (str(self.project_dir), None),
+                                    (str(self.project_dir), str(self.config))):
+            with self.subTest(project_dir=project_dir, config=config):
+                notes = owner_guide.render(PROJECT, URL, IDENTITY, project_dir=project_dir, config_file=config)
+                section = notes.split("第一次备份前登记钥匙\n", 1)[1].split("就可以运行手动备份。", 1)[0]
+                windows, mac = section.split("\n\nMac\n", 1)
+                self.assertIn("windows-site-tools.zip", windows)
+                self.assertIn("GiftLedger.cmd", windows)
+                for phrase in ("mac-site-tools.zip", "mac_backup_key.py", "Mac 终端", "登记旧钥匙",
+                               "生成新钥匙并登记", "本站备份钥匙登记通过"):
+                    self.assertIn(phrase, mac)
+                self.assertIn("python3 mac_backup_key.py ", mac)
+                self.assertNotIn("查看本站目录", mac)
+                self.assertNotIn("重新下载", mac)
+                if config is None:
+                    self.assertLess(notes.index("\n第一次备份前登记钥匙\n"), notes.index("\n查看本站目录\n"))
+                    subprocess.run(["/bin/sh", "-c", command(mac, "mac_backup_key.py")], check=True,
+                                   env=self.env, cwd=self.root, input="owner\n2202\n", text=True,
+                                   stdout=subprocess.DEVNULL)
+                    self.assertEqual(self.calls.read_text().splitlines(), [
+                        "mac_backup_key.py", "--host", "owner@192.0.2.20", "--port", "2202",
+                        "--project", PROJECT, "--instance-id", IDENTITY["instance_id"], "--site-url", URL])
+
     def test_mac_guide_opens_the_key_menu_and_passes_the_exact_site_for_enrollment_and_restore(self):
         notes = owner_guide.render(PROJECT, URL, IDENTITY, project_dir=str(self.project_dir),
                                    site_dir=str(self.station), config_file=str(self.config))

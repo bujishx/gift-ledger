@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>站点维护 · 往来有礼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/maintenance-ui.css">
+  <link rel="stylesheet" href="/api/v1/maintenance/page.css">
+  <script defer src="/api/v1/maintenance/page.js"></script>
+</head>
+<body>
+  <main class="auth-shell auth-page maintenance-page">
+    <section class="auth-card card" aria-labelledby="maintenance-title">
+      <header class="auth-head">
+        <div class="brand large">
+          <img class="brand-mark brand-mark-image" src="/brand-mark.png" alt=""><strong>往来有礼</strong>
+        </div>
+        <h1 id="maintenance-title">站点维护</h1>
+        <p class="muted" id="site"></p>
+      </header>
+      <div id="owner-access" hidden>
+        <form id="owner-login" class="form-stack" autocomplete="off">
+          <label class="field">站主登录方式
+            <select id="owner-method">
+              <option value="code">服务器短时码（默认）</option>
+              <option value="password">站主密码</option>
+            </select>
+          </label>
+          <div class="field">
+            <label class="field-label" for="owner-credential" id="credential-label">本站短时码</label>
+            <input id="owner-credential" type="password" required maxlength="128" autocomplete="off"
+                   autocapitalize="none" spellcheck="false" aria-describedby="login-help">
+            <small id="login-help" class="auth-field-help">请在服务器上打开本站的 data/本站维护说明.txt，按说明取得短时码。</small>
+          </div>
+          <button class="primary full" type="submit">登录站点维护</button>
+        </form>
+        <div id="owner-current" class="owner-current" hidden>
+          <strong id="owner-project"></strong>
+          <button class="text-button" id="owner-logout" type="button">退出站主登录</button>
+        </div>
+        <details id="owner-security">
+          <summary>设置、找回或关闭站主密码</summary>
+          <form id="owner-password" class="form-stack" autocomplete="off">
+            <p class="auth-field-help">站主密码可选。忘记密码时，从服务器取得本站的新短时码，即可重新设置。</p>
+            <label class="field">密码设置
+              <select id="owner-password-action">
+                <option value="set">设置或重设站主密码</option>
+                <option value="disable">关闭密码登录，继续使用短时码</option>
+              </select>
+            </label>
+            <label class="field">服务器新签发的本站短时码
+              <input id="owner-setting-code" type="password" required maxlength="128"
+                     autocomplete="off" autocapitalize="none" spellcheck="false">
+            </label>
+            <div id="owner-password-fields" class="owner-password-fields">
+              <label class="field">新站主密码
+                <input id="owner-new-password" type="password" required minlength="8" maxlength="128" autocomplete="off">
+              </label>
+              <label class="field">再输一次新站主密码
+                <input id="owner-repeat-password" type="password" required maxlength="128" autocomplete="off">
+              </label>
+            </div>
+            <button type="submit" id="owner-set-password" class="outline">保存新站主密码</button>
+          </form>
+        </details>
+      </div>
+      <output id="owner-feedback" class="auth-hint" aria-live="polite"></output>
+      <button class="outline full" type="button" id="retry-access" hidden>重新读取登录方式</button>
+      <section id="key-enrollment" class="maintenance-section" hidden aria-labelledby="key-title">
+        <h2 id="key-title">首次备份前登记钥匙</h2>
+        <p>从零建账的站和用旧备份恢复的新站都可以选。今后要恢复本站的备份，需要保管好这把原钥匙。</p>
+        <div class="maintenance-actions" id="key-choices">
+          <button class="outline" type="button" id="key-old">登记旧钥匙</button>
+          <button class="outline" type="button" id="key-new">生成新钥匙并登记</button>
+        </div>
+        <div id="key-selection" class="form-stack" hidden>
+          <a class="text-button" id="key-download" hidden>下载新钥匙</a>
+          <div class="field">
+            <label for="key-file" id="key-file-label" class="field-label">选择备份原钥匙文件</label>
+            <input id="key-file" type="file" aria-describedby="key-file-help">
+            <small id="key-file-help" class="auth-field-help">可以从电脑或 U 盘选择。旧版 identity.txt 和 .agekey 文件均可使用。</small>
+          </div>
+          <div class="maintenance-actions">
+            <button class="outline" type="button" id="key-cancel">取消</button>
+            <button class="primary" type="button" id="key-confirm">确认登记到本站</button>
+          </div>
+        </div>
+        <output id="key-feedback" class="auth-hint" aria-live="polite"></output>
+        <button class="outline full" type="button" id="key-retry" hidden>继续核对登记结果</button>
+      </section>
+      <form id="maintenance" class="form-stack" autocomplete="off" hidden>
+        <div id="legacy-owner-field" class="field">
+          <label for="token" class="field-label">本站维护授权码<span class="auth-req" aria-hidden="true">*</span></label>
+          <input id="token" type="password" required autocomplete="off"
+                 autocapitalize="none" spellcheck="false" maxlength="64">
+        </div>
+        <p class="auth-note maintenance-help">备份时网页会短暂离线。可以关闭浏览器，稍后重新打开本站，查看备份结果。</p>
+        <div class="maintenance-actions">
+          <button class="outline" type="submit" value="status">查看备份结果</button>
+          <button class="primary" type="submit" value="backup">开始备份</button>
+        </div>
+      </form>
+      <output id="result" class="auth-hint" aria-live="polite"></output>
+      <button id="download-backup" type="button" class="outline" hidden>下载已核验的备份 ZIP</button>
+      <section id="site-restore" class="maintenance-section" hidden aria-labelledby="restore-title">
+        <h2 id="restore-title">用旧备份恢复到本站</h2>
+        <p>请在独立建立的空白站操作。先选择旧站的备份和当时对应的原钥匙，预检通过后再确认恢复。</p>
+        <div class="form-stack" id="restore-inputs">
+          <label class="field">旧站的备份 ZIP 或完整五个文件
+            <input id="restore-files" type="file" multiple>
+          </label>
+          <label class="field">创建这份备份时使用的原钥匙
+            <input id="restore-key" type="file">
+          </label>
+          <button id="restore-start" class="outline" type="button">上传并预检</button>
+        </div>
+        <output id="restore-preview" class="auth-hint" aria-live="polite"></output>
+        <div class="form-stack" id="restore-approval" hidden>
+          <label class="field">核对上方目标站，输入“恢复”确认
+            <input id="restore-confirm-text" type="text" autocomplete="off" maxlength="2">
+          </label>
+          <button id="restore-confirm" class="primary" type="button">确认恢复到本站</button>
+        </div>
+        <output id="restore-feedback" class="auth-hint" aria-live="polite"></output>
+        <div class="maintenance-actions">
+          <button id="restore-status" class="outline" type="button">查看恢复进度</button>
+          <button id="restore-cancel" class="outline" type="button" hidden>取消本次恢复</button>
+        </div>
+      </section>
+      <section id="account-help" hidden aria-labelledby="account-help-title">
+        <h2 id="account-help-title">协助找回业务账号</h2>
+        <p class="muted">先核实是账号本人。只忘了登录名时，把查到的登录名单独告诉本人即可。</p>
+        <div class="maintenance-actions">
+          <button type="button" class="outline" id="lookup-users">查看登录名</button>
+          <button type="button" class="outline" id="choose-reset">重置密码</button>
+        </div>
+        <output id="account-feedback" class="auth-hint" aria-live="polite"></output>
+        <ul id="account-list" hidden aria-label="本站业务账号"></ul>
+        <form id="reset-account" class="form-stack" autocomplete="off" hidden>
+          <div class="field">
+            <label for="account-select" class="field-label">业务登录名</label>
+            <select id="account-select" required></select>
+          </div>
+          <div class="field">
+            <label for="new-password" class="field-label">新密码</label>
+            <input id="new-password" type="password" required minlength="8" maxlength="128" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="repeat-password" class="field-label">再输一次新密码</label>
+            <input id="repeat-password" type="password" required maxlength="128" autocomplete="off">
+          </div>
+          <label class="account-confirm">
+            <input type="checkbox" id="confirm-account" required>
+            <span id="confirm-account-text">请先选择要重置密码的业务账号。</span>
+          </label>
+          <p class="auth-note maintenance-help">重置后，旧密码和该账号已有的登录会话会失效。</p>
+          <div class="maintenance-actions">
+            <button type="button" class="outline" id="cancel-reset">取消</button>
+            <button type="submit" class="primary">确认重置</button>
+          </div>
+        </form>
+      </section>
+      <div class="auth-switch">
+        <a href="/" class="text-button">返回记账网站</a>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

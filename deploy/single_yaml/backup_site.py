@@ -235,6 +235,16 @@ class SiteBindings:
         for target, (source, writable) in ops.SERVICE_MOUNTS[role].items():
             expected[target] = (mount("volume", project + "_mysql_socket", writable) if source == "mysql_socket"
                                 else mount("bind", self.station / "data" / source, writable))
+        # Opt-in site maintenance can publish requests. Its owner digest and
+        # results stay on a read-only bind outside the restored business data.
+        inbox = "/run/giftledger-maintenance"
+        if role == "api" and any(item.get("Destination") == inbox for item in mounts):
+            root = self.station / ".giftledger-maintenance"
+            expected[inbox] = mount("bind", root, False)
+            expected[inbox + "/requests"] = mount("bind", root / "requests", True)
+            owner = "/run/giftledger-owner"
+            if any(item.get("Destination") == owner for item in mounts):
+                expected[owner] = mount("bind", self.station / ".giftledger-owner", True)
         check_mounts(mounts, expected, TEMPORARY[role])
 
     def services(self, profile, docker):
@@ -307,13 +317,21 @@ def backup():
     report_backup(run_backup(site, site.profile(), docker, Worker))
 
 
-def run_backup(site, profile, docker, worker_factory):
+def run_backup(site, profile, docker, worker_factory, *, engine_session=None, recover=False):
     state, store = site.directories()
     pending = [row for _, row in ops.run_records(state)
                if row["stage"] not in ("finished", "preflight-failed") or row.get("private_cleanup_pending")]
     ops.require(len(pending) <= 1, "ambiguous_backup_session")
+    if engine_session is None:
+        ops.require(not recover, "recovery_session_required")
+    elif recover:
+        ops.require(len(pending) == 1 and pending[0]["session_id"] == engine_session,
+                    "backup_review_session_changed")
+    else:
+        ops.require(not pending, "previous_backup_requires_review")
     mode, session = ("recover", pending[0]["session_id"]) if pending else ("manual", None)
     result = ops.run(profile, docker=docker, mode=mode, session_id=session,
+                     new_session_id=engine_session if mode == "manual" else None,
                      worker_factory=worker_factory, site_bindings=site)
     ops.require(not result.get("private_cleanup_pending"), "private_cleanup_pending")
     ops.require(result.get("bundle_id"), "backup_not_published")

@@ -1,6 +1,7 @@
 """Build a Linux/amd64 candidate once, then publish the tested OCI manifests."""
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -23,6 +24,12 @@ BASES = {
     "mysql": "mysql:8.4.11-oraclelinux9",
     "node": "node:22-alpine",
     "nginx": "nginx:stable-alpine",
+}
+# Reviewed upstream manifests used for v1.6.0. Updating a base is a release change.
+BASE_DIGESTS = {
+    "mysql": "sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364",
+    "node": "sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a",
+    "nginx": "sha256:3bc3836dc0be3b811f238210360bf8e7ca8a2d0effdae46160bf1f3578710051",
 }
 
 
@@ -205,23 +212,8 @@ def build_candidate(out, commit):
 
     resolved = {}
     for key, image in BASES.items():
-        upstream = "docker.io/library/" + image
-        run("docker", "pull", "--platform=linux/amd64", upstream)
-        ref = (
-            output(
-                "docker",
-                "image",
-                "inspect",
-                "--format",
-                "{{index .RepoDigests 0}}",
-                upstream,
-            )
-            .decode()
-            .strip()
-        )
-        if not PIN.fullmatch(ref.split("@")[-1]):
-            raise ValueError("Unresolved base")
-        resolved[key] = upstream.split(":")[0] + "@" + ref.split("@")[1]
+        resolved[key] = "docker.io/library/" + image.partition(":")[0] + "@" + BASE_DIGESTS[key]
+        run("docker", "pull", "--platform=linux/amd64", resolved[key])
 
     def pinned_dockerfile(src, pairs, name):
         data = src.read_text()
@@ -356,8 +348,21 @@ def write_site_tools_zip(path, yaml_bytes, *, windows=False):
             entry.external_attr = 0o100644 << 16
             z.writestr(entry, data)
 
-        for name in ("mac_backup_key.py", "mac_restore.py", "mac_restore_bundle.py"):
+        key_tool = selected_file("deploy/single_yaml/mac_backup_key.py")
+        member("mac_backup_key.py", key_tool)
+        for name in ("mac_restore.py", "mac_restore_bundle.py"):
             member(name, selected_file(Path("deploy/single_yaml") / name))
+        # Release control can rebuild older commits. Use only the shared helpers
+        # imported by the selected key tool so previous ZIPs stay identical.
+        imported = set()
+        for node in ast.walk(ast.parse(key_tool)):
+            if isinstance(node, ast.ImportFrom):
+                imported.add(node.module)
+            elif isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+        for name in ("owner_guide", "native_age"):
+            if name in imported:
+                member(name + ".py", selected_file(f"deploy/single_yaml/{name}.py"))
         for name in ("backup_store.py", "backup_export.py"):
             member(name, selected_file(Path("deploy/release/backup_ops") / name))
         for guide in ("从备份恢复.md", "站主找回账号.md", "站主升级.md"):
