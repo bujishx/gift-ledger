@@ -1,6 +1,6 @@
 {
   ".dockerignore": "0b2ab9ef315d6840dc8bbd556a03a83e76058b3cfd526000935b675f697dd5a7",
-  ".github/workflows/candidate.yml": "5ea38b5fd4b28ef8dc72477bea8dd4bffec2224737d8ac0614a55d23294604b5",
+  ".github/workflows/candidate.yml": "c721f9b2defdee88e1d21ff3c612405343b6a19115f8768c4a375e1422c659c2",
   ".github/workflows/release.yml": "3a770626d5da4460fe8866f216804c8bbcc0d32326618a282decab713c9f2f19",
   ".gitignore": "ce72f24c6f094f131aa252dca50f9a251c9dfdbd8ae239f705a0816b8c2ef147",
   "README.en.md": "e1d6833fcd8b0b00cfbe8a5f1ebacccff3c698ce532023f35ae22a83ac28e3cd",
