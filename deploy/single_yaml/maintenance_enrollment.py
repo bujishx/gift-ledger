@@ -255,7 +255,17 @@ def readback(exchange, helper, record):
         require(out["registered"] or "request" in record, "unrequested_key_import_receipt")
         wire.check_receipt(receipt, out["target"], record.get("request"))
         helper.committed(receipt)
+        if not out["registered"] and record.get("filename"):
+            save_label(helper, receipt, record["filename"])
     return receipt
+
+
+def save_label(helper, receipt, filename):
+    if wire.valid_filename(filename):
+        helper.archive.ops.save_json(helper.state / "key-label.json", {
+            "project": receipt["project"], "instance_id": receipt["instance_id"],
+            "recipient": receipt["backup_recipient"], "filename": filename,
+        })
 
 
 def exchange_keys(host, private, handles, helper, record, exchange):
@@ -304,9 +314,11 @@ def exchange_keys(host, private, handles, helper, record, exchange):
                 require(record.get("request", req) == req, "enrollment_request_changed")
                 if "request" not in record:
                     record["request"] = req
+                    if "filename" in packet:
+                        record["filename"] = packet["filename"]
                     update(host, private, handles, record, "verifying")
                 if not (exchange / "packet.json").exists():
-                    host.atomic_file(exchange / "packet.json", wire.encode(packet), 0o600)
+                    host.atomic_file(exchange / "packet.json", wire.encode({k: packet[k] for k in ("request", "ciphertext_b64")}), 0o600)
         # Poll the receipt first. An exited helper cannot be taken as proof of successful enrollment.
         if time.monotonic() >= inspect_at:
             found = helper.docker.inspect(container)
@@ -435,6 +447,8 @@ def review(host, private, handles, cfg, operation, archive, key_image):
                     require(exit_status == "0" and proof is not None, "enrollment_review_receipt_missing")
                     wire.check_receipt(proof, out["target"], record.get("request"))
                     helper.committed(proof)
+                    if record.get("request") and record.get("filename"):
+                        save_label(helper, proof, record["filename"])
                     value.setdefault("target", out["target"])
                     value["registered"] = "request" not in record
                     update(host, private, handles, record, "succeeded", code="enrollment_commit_verified", receipt=proof)

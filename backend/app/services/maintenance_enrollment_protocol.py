@@ -64,8 +64,24 @@ def check_target(target, project, instance):
     )
 
 
+def valid_filename(value):
+    return (
+        isinstance(value, str)
+        and value not in ("", ".", "..")
+        and value.isprintable()
+        and "/" not in value
+        and "\\" not in value
+        and "AGE-SECRET-KEY-" not in value.upper()
+        and len(value.encode("utf-8")) <= 255
+    )
+
+
 def check_packet(packet, operation, target):
-    check(isinstance(packet, dict) and packet.keys() == {"request", "ciphertext_b64"})
+    check(isinstance(packet, dict) and packet.keys() in (
+        {"request", "ciphertext_b64"}, {"request", "ciphertext_b64", "filename"}
+    ))
+    if "filename" in packet:
+        check(valid_filename(packet["filename"]))
     request = packet["request"]
     check(
         isinstance(request, dict)

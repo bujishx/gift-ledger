@@ -593,11 +593,145 @@ def retire_marker(directory, operation):
         os.fsync(directory)
 
 
+def key_state_revision(cfg):
+    """Detect commits by an external enrolled CLI/rotation/DSM task without running docker inspect each poll."""
+    try:
+        with directories(Path(cfg["station"])) as root:
+            require(identity(os.fstat(root)) == cfg["station_inode"], "station_identity_changed")
+            with directories(Path(".giftledger-backup-state"), root) as folder:
+                stamps = []
+                for name in ("site.json", "key-label.json", "key-change.json", "last-result.json"):
+                    try:
+                        info = os.stat(name, dir_fd=folder, follow_symlinks=False)
+                        stamps.append((info.st_ino, info.st_mtime_ns))
+                    except FileNotFoundError:
+                        stamps.append(None)
+                return tuple(stamps)
+    except (HostError, OSError):
+        return None
+
+
 def owner_snapshot(cfg):
     """Collect public facts from the named site's host volumes without exposing their contents."""
     with directories(Path(cfg["station"])) as root:
         require(identity(os.fstat(root)) == cfg["station_inode"], "station_identity_changed")
         return sample_owner_site(cfg, root)
+
+
+def key_observation(cfg, root, owned_file, time_field):
+    """The enrollment receipt is a past operation. The engine binding is the active key."""
+    state = ".giftledger-backup-state"
+    control = json.loads(owned_file("data/root_config/site/control", "identity.json", 65536))
+    binding = (cfg["project"], cfg["instance"])
+    require((control["project"], control["instance_id"]) == binding, "foreign_site")
+    try:
+        with directories(Path(state), root) as fd:
+            info = os.fstat(fd)
+            require(info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o700, "untrusted_engine")
+        entry = json.loads(owned_file(state, "site.json", 4096))
+    except FileNotFoundError:
+        # An installed, bound station before its first enrollment has no site.json.
+        # Leftover converted run history needs review instead of offering a new enrollment.
+        try:
+            with directories(Path(state + "/runs"), root) as folder:
+                if os.listdir(folder):
+                    return {"state": "unknown"}
+        except FileNotFoundError:
+            pass
+        return {"state": "unregistered", "first": {"state": "none"}}
+    recipient = entry["backup_recipient"]
+    require((entry["project"], entry["instance_id"]) == binding and
+            isinstance(recipient, str) and re.fullmatch(r"age1[0-9a-z]{58}", recipient) and
+            str(UUID(entry["server_uuid"])) == entry["server_uuid"], "untrusted_key_binding")
+    result = {"state": "registered", "recipient": recipient}
+    rotated_backup = None
+    try:
+        label = json.loads(owned_file(state, "key-label.json", 4096))
+        if (label["project"], label["instance_id"], label["recipient"]) == (*binding, recipient):
+            result["filename"] = label.get("filename")
+            rotated_backup = label.get("rotation_backup")
+    except (HostError, KeyError, OSError, TypeError, ValueError):
+        pass
+    try:
+        result["first"] = first_verified_backup(root, entry, owned_file, time_field)
+    except (HostError, KeyError, OSError, TypeError, ValueError):
+        result["first"] = {"state": "unknown"}
+    try:
+        if not rotated_backup:  # v1.8.0 recorded the first backup in its committed rotation journal.
+            change = json.loads(owned_file(state, "key-change.json", 16384))
+            if (change.get("project"), change.get("instance"), change.get("recipient"), change.get("stage")) == (
+                    cfg["project"], cfg["instance"], recipient, "completed"):
+                rotated_backup = change.get("backup")
+        if rotated_backup and isinstance(rotated_backup, str) and HEX_ID.fullmatch(rotated_backup):
+            # Both the label and the completed journal are root-owned and are only committed after proof.
+            result["current_key_backup"] = {"state": "verified"}
+            manifest = json.loads(owned_file(state + "/bundle-manifests", rotated_backup + ".json", 65536))
+            require(all(manifest[k] == entry[k] for k in ("project", "instance_id", "server_uuid"))
+                    and manifest["backup_operation_id"] == rotated_backup, "foreign_rotation_manifest")
+            checked = time_field(manifest.get("completed_at"))
+            if checked:
+                result["current_key_backup"].update(at=checked, backup_id=rotated_backup)
+    except (HostError, KeyError, OSError, TypeError, ValueError):
+        pass
+    return result
+
+
+def first_verified_backup(root, entry, owned_file, time_field):
+    state = ".giftledger-backup-state"
+    binding = {k: entry[k] for k in ("project", "instance_id", "server_uuid")}
+    receipt = "first-verified-backup.json"
+    try:
+        prior = json.loads(owned_file(state, receipt, 4096))
+        require(all(prior[k] == v for k, v in binding.items()) and prior["first"]["state"] == "verified",
+                "foreign_first_backup")
+        return prior["first"]
+    except FileNotFoundError:
+        pass
+    try:
+        with directories(Path(state + "/runs"), root) as folder:
+            sessions = os.listdir(folder)
+    except FileNotFoundError:
+        return {"state": "none"}
+    verified = []
+    complete = True
+    for session in sessions:
+        if not HEX_ID.fullmatch(session):
+            complete = False
+            continue
+        try:
+            run = json.loads(owned_file(state + "/runs/" + session, "run.json", 131072))
+            if (run["project"], run["instance_id"]) != (entry["project"], entry["instance_id"]):
+                continue
+            require(run["session_id"] == session, "invalid_run_binding")
+            bid = run.get("bundle_id")
+            if run["stage"] != "finished" or not bid or run.get("private_cleanup_pending") is not False:
+                continue
+            require(HEX_ID.fullmatch(bid) and run["backup_id"] == bid, "invalid_verified_backup")
+            checked = None
+            try:
+                manifest = json.loads(owned_file(state + "/bundle-manifests", bid + ".json", 65536))
+                require(all(manifest[k] == v for k, v in binding.items())
+                        and manifest["backup_operation_id"] == bid and manifest["verify_operation_id"] == run["verify_id"],
+                        "foreign_backup_manifest")
+                checked = time_field(manifest.get("completed_at"))
+            except FileNotFoundError:
+                # A finished host run only gets a bundle ID after actual decryption and verified publication.
+                # The archive or the old timestamp may have been removed independently.
+                pass
+            verified.append((checked, bid))
+        except (HostError, KeyError, OSError, TypeError, ValueError):
+            complete = False
+    if not verified:
+        return {"state": "none" if complete else "unknown"}
+    result = {"state": "verified"}
+    if complete and all(moment for moment, _ in verified):
+        moment, bid = min(verified)
+        result.update(at=moment, backup_id=bid)
+    if complete:
+        # One-time legacy backfill. Normal retention deletes ciphertext, never this site-bound receipt.
+        with directories(Path(state), root) as directory:
+            publish(directory, receipt, encoded(dict(binding, first=result)))
+    return result
 
 
 def sample_owner_site(cfg, root):
@@ -620,6 +754,10 @@ def sample_owner_site(cfg, root):
                 return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
         return None
 
+    try:
+        data["backup_key"] = key_observation(cfg, root, owned_file, time_field)
+    except (HostError, KeyError, OSError, TypeError, ValueError):
+        data["backup_key"] = {"state": "unknown"}
     for key, folder in (("ledger_free_bytes", "data/mysql_data"), ("backup_free_bytes", "backups")):
         try:
             with directories(Path(folder), root) as fd:
@@ -724,8 +862,15 @@ def serve(state, wait, once, expected_station=None, key_enrollment=False, key_im
                 require(str(restore.__file__).startswith(cfg["archive"] + "/"), "unexpected_restore_queue_module")
                 recovery = restore.current(host, state, handles, cfg)
             deadline = time.monotonic() + wait
-            next_sample = 0.0
+            next_sample = next_key_check = 0.0
+            last_key_revision = None
             while (persistent or time.monotonic() < deadline) and not (stopping and stopping.is_set()):
+                if persistent and key_enrollment and time.monotonic() >= next_key_check:
+                    revision = key_state_revision(cfg)
+                    if revision != last_key_revision:
+                        next_sample = 0.0
+                        last_key_revision = revision
+                    next_key_check = time.monotonic() + 3
                 if persistent and key_enrollment and time.monotonic() >= next_sample:
                     try:
                         publish(handles["status"], "overview.json", encoded(owner_snapshot(cfg)))
@@ -736,6 +881,7 @@ def serve(state, wait, once, expected_station=None, key_enrollment=False, key_im
                     if recovery["public"]["state"] == "needs_review":
                         return review_exit
                     if restore.tick(host, state, handles, cfg, recovery, archive, key_image):
+                        next_sample = 0.0
                         if once and recovery["public"]["state"] in restore.TERMINAL:
                             return 0 if recovery["public"]["state"] == "succeeded" else 1
                         deadline = time.monotonic() + wait
@@ -749,6 +895,7 @@ def serve(state, wait, once, expected_station=None, key_enrollment=False, key_im
                     if record["public"]["state"] == "needs_review":
                         return review_exit
                     if enroll.tick(host, state, handles, cfg, record, archive, key_image):
+                        next_sample = 0.0
                         if once:
                             return 0 if record["public"]["state"] == "succeeded" else 1
                         deadline = time.monotonic() + wait

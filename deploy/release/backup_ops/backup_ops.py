@@ -1579,6 +1579,25 @@ def run(
             # Consumers may rely on both files after seeing 'finished'. Publish the receipt
             # first so a power loss before that point leaves the same session resumable.
             save_run(journal_path, record, "finished")
+            # Persist a new site's very first success independently of web/DSM schedule/host sampling.
+            # If this is an upgrade, the dispatcher imports the original first result from older journals.
+            first_path = state / "first-verified-backup.json"
+            if (site_bindings is not None and manifest and not record["private_cleanup_pending"]
+                    and not os.path.lexists(first_path)
+                    and not any(prior.get("instance_id") == profile["instance_id"]
+                                and prior.get("project") == profile["project"]
+                                and prior.get("stage") == "finished" and prior.get("bundle_id")
+                                and prior.get("private_cleanup_pending") is False for _, prior in history)):
+                try:
+                    save_json(first_path, {
+                        "project": profile["project"], "instance_id": profile["instance_id"],
+                        "server_uuid": profile["server_uuid"], "first": {
+                            "state": "verified", "at": manifest["completed_at"], "backup_id": record["bundle_id"]
+                        },
+                    })
+                except OSError:
+                    pass  # The verified manifest and finished journal still allow one-time backfill.
+
             try:
                 # The first backup with a staged key must leave historical, old-key artifacts in place.
                 record["retention"] = ({"success": True, "status": "key_change_preserved_history"}

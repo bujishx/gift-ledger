@@ -4,6 +4,7 @@ import os
 import re
 import stat
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
@@ -13,6 +14,7 @@ from app.api.maintenance_access import HEADERS, require_owner
 from app.api.routes.site_maintenance import submission_lock, unavailable
 from app.services import maintenance_enrollment_protocol as wire
 from app.services import maintenance_restore_protocol as restore_wire
+from app.services.maintenance_overview import read_host_snapshot, timestamp
 
 router = APIRouter(prefix="/api/v1/maintenance/key-enrollment", include_in_schema=False)
 
@@ -151,6 +153,39 @@ async def body(request, limit):
 def response(value, *, conflict=False):
     code = 409 if conflict else (202 if value["state"] in wire.ACTIVE else 200)
     return JSONResponse(value, status_code=code, headers=HEADERS)
+
+
+def history_result(record):
+    if isinstance(record, dict):
+        if record.get("state") == "none":
+            return {"state": "none"}
+        if record.get("state") == "verified":
+            checked = timestamp(record.get("at"))
+            if checked and wire.matches(wire.OP, record.get("backup_id")):
+                return {"state": "verified", "at": checked.isoformat(), "backup_id": record["backup_id"]}
+            return {"state": "verified"}
+    return {"state": "unknown"}
+
+
+@router.get("/binding")
+def binding_status(request: Request):
+    owner = require_owner(request)
+    root = request.app.state.maintenance_root
+    host, sampled = read_host_snapshot(root, owner, datetime.now(UTC))
+    record = host.get("backup_key")
+    result = dict(project=owner.binding[0], instance=owner.binding[1], sampled_at=sampled,
+                  state="unknown", first={"state": "unknown"})
+    if isinstance(record, dict):
+        if record.get("state") == "unregistered":
+            result.update(state="unregistered", first=history_result(record.get("first")))
+        elif record.get("state") == "registered" and wire.matches(wire.AGE, record.get("recipient")):
+            name = record.get("filename")
+            result.update(state="registered", recipient=record["recipient"],
+                          filename=name if wire.valid_filename(name) else None,
+                          first=history_result(record.get("first")))
+            if "current_key_backup" in record:
+                result["current_key_backup"] = history_result(record["current_key_backup"])
+    return JSONResponse(result, headers=HEADERS)
 
 
 @router.get("")

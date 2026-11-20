@@ -47,6 +47,17 @@ def cleanup_candidate(state, operation):
     ops.fsync_directory(state)
 
 
+def discard_unprepared(state, row):
+    # The host lock is held. A previous 'prepared' job may already have a saved
+    # key and a valid confirmation; merely closing this interaction preserves it.
+    if row["stage"] == "preparing":
+        current = ops.read_json(state / JOURNAL)
+        ops.require(current == row, "key_change_journal_mismatch")
+        row["stage"] = "cancelled"
+        ops.save_json(state / JOURNAL, row)
+        cleanup_candidate(state, row["operation"])
+
+
 def discover(installer, root, install):
     cfg = installer.host.read_config(root / "state")
     for key in ("project", "station", "station_inode", "instance"):
@@ -67,10 +78,7 @@ def discover(installer, root, install):
     return site, profile
 
 
-def helper(site, profile, action, operation, arguments, *, candidate=None, bundle=None):
-    docker = site.docker
-    project = profile["project"]
-    role = "backup_identity"
+def key_volume(docker, project, role):
     volume = project + "_" + role
     obj, = json.loads(docker.call("volume", "inspect", volume))
     labels = obj["Labels"] or {}
@@ -78,10 +86,20 @@ def helper(site, profile, action, operation, arguments, *, candidate=None, bundl
                 and labels.get("com.docker.compose.project") == labels.get("org.gift-ledger.gui-v2-project") == project
                 and labels.get("com.docker.compose.volume") == labels.get("org.gift-ledger.gui-v2-role") == role,
                 "key_volume_identity_mismatch")
+    return volume
+
+
+def helper(site, profile, action, operation, arguments, *, candidate=None, bundle=None):
+    docker = site.docker
+    project = profile["project"]
+    volume = key_volume(docker, project, "backup_identity")
     mounts = [("/work/identity", backup_site.mount("volume", volume, action == "commit"))]
+    if action in ("existing-target", "existing-import"):
+        transport = key_volume(docker, project, "key_transfer")
+        mounts.append(("/work/key-transfer", backup_site.mount("volume", transport, False)))
     if candidate is not None:
         valid_private_dir(candidate)
-        mounts.append(("/work/candidate", backup_site.mount("bind", candidate, action == "prepare")))
+        mounts.append(("/work/candidate", backup_site.mount("bind", candidate, action in ("prepare", "existing-import"))))
     if bundle is not None:
         ops.no_links(bundle)
         mounts.append(("/work/source", backup_site.mount("bind", bundle, False)))
@@ -189,7 +207,7 @@ def candidate_backup(site, profile, install, row):
 
 def authorize(action, install):
     print("项目 " + install["project"] + "，网址 " + install["origin"] + "，实例 " + install["instance"])
-    word = {"recover-key":"补领", "prepare-key-change":"准备换钥", "finish-key-change":"确认换钥",
+    word = {"recover-key":"补领", "prepare-key-change":"准备换钥", "prepare-existing-key-change":"准备换钥", "finish-key-change":"确认换钥",
             "cancel-key-change":"取消换钥"}[action]
     ops.require(input("确认授权本站操作，请输入“" + word + "”，回车退出：").strip() == word, "operator_cancelled")
 
@@ -228,29 +246,61 @@ def run(installer, root, install, action):
             ops.require(reply["recipient"] == profile["recipient"], "registered_key_mismatch")
             response(reply)
         return
-    if action == "prepare-key-change":
+    if action in ("prepare-key-change", "prepare-existing-key-change"):
+        existing = action == "prepare-existing-key-change"
+        source = "existing" if existing else "generated"
         public = receiver()
         with ops.host_lock(state):
             idle(site)
             if not row or row["stage"] in ("completed", "cancelled"):
                 row = {"project":site.project, "instance":profile["instance_id"], "operation":uuid.uuid4().hex,
-                       "original":profile["recipient"], "stage":"preparing"}
+                       "original":profile["recipient"], "source":source, "stage":"preparing"}
                 ops.save_json(journal, row)
             ops.require(row["stage"] in ("preparing", "prepared") and row["original"] == profile["recipient"],
                         "finish_key_change_first")
+            ops.require(row.get("source", "generated") == source, "cancel_other_key_change_first")
+        if existing:
+            target = helper(site, profile, "existing-target", row["operation"], [public, install["origin"]])
+            ops.require(target["recipient"] == row["original"], "registered_key_mismatch")
+            response(target)
+            try:
+                encrypted = input("请在同一维护页打开回执，将页面给出的加密钥匙包粘贴到这里，回车退出：").strip()
+            except (EOFError, KeyboardInterrupt):
+                encrypted = ""
+            if not encrypted:
+                with ops.host_lock(state):
+                    discard_unprepared(state, row)
+                print("已退出本次输入，当前登记钥匙继续使用。" +
+                      (" 此前已准备的换钥仍可完成或取消。" if row["stage"] == "prepared" else ""))
+                return
+            ops.require(len(encrypted) <= 12000 and re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", encrypted),
+                        "encrypted_key_package_required")
+        with ops.host_lock(state):
+            idle(site)
             if row["stage"] == "preparing":
-                # An interrupted helper may have written only one member. No receipt could
-                # have been issued until 'prepared' was durable, so retry from a clean set.
                 cleanup_candidate(state, row["operation"])
             candidate = private_dir(state / ("key-change-" + row["operation"]))
-            reply = helper(site, profile, "prepare", row["operation"], [public, install["origin"]], candidate=candidate)
+            args = [public, install["origin"]]
+            if existing:
+                args.append(encrypted)
+            reply = helper(site, profile, "existing-import" if existing else "prepare", row["operation"],
+                           args, candidate=candidate)
+            if existing and reply.get("unchanged") is True:
+                ops.require(reply["recipient"] == row["original"], "invalid_candidate_receipt")
+                discard_unprepared(state, row)
+                print("这就是本站当前的钥匙，无需更换。" +
+                      (" 此前已准备的换钥仍可完成或取消。" if row["stage"] == "prepared" else ""))
+                return
             ops.require(reply["recipient"] != row["original"] and ops.SHA.fullmatch(reply["challenge_hash"])
                         and set(reply["old_hashes"]) == set(FIELDS)
                         and all(ops.SHA.fullmatch(v) for v in reply["old_hashes"].values()), "invalid_candidate_receipt")
             row.update(stage="prepared", recipient=reply["recipient"], challenge_hash=reply["challenge_hash"],
                        old_hashes=reply["old_hashes"])
             ops.save_json(journal, row)
-            response(reply)
+            if existing:
+                print("待启用公钥 " + row["recipient"] + "。请使用维护页给出的确认码执行完成换钥命令。")
+            else:
+                response(reply)
         return
     ops.require(row is not None, "prepare_key_change_first")
     if action == "cancel-key-change":
@@ -274,7 +324,17 @@ def run(installer, root, install, action):
         return
     ops.require(row["stage"] in ("prepared", "testing", "committing"), "prepare_key_change_first")
     if row["stage"] == "prepared":
-        saved = input("在维护页打开刚保存的新钥匙，粘贴页面显示的保存确认码：").strip()
+        # Older pages sent the bare token. New pages append only the basename
+        # actually selected by the owner; never treat it as a server path.
+        from maintenance_enrollment_protocol import valid_filename
+        saved, separator, encoded_name = input("粘贴维护页显示的本次换钥确认码：").strip().partition(".")
+        if separator:
+            try:
+                name = base64.b64decode(encoded_name, validate=True).decode("utf-8")
+            except (ValueError, UnicodeError):
+                name = ""
+            ops.require(valid_filename(name), "invalid_key_filename")
+            row["filename"] = name
         ops.require(hmac.compare_digest(hashlib.sha256(saved.encode()).hexdigest(), row["challenge_hash"]),
                     "saved_key_confirmation_mismatch")
     if row["stage"] in ("prepared", "testing"):
@@ -294,6 +354,8 @@ def run(installer, root, install, action):
         reply = helper(site, profile, "commit", row["operation"], [json.dumps(row["old_hashes"])],
                        candidate=state / ("key-change-" + row["operation"]))
         ops.require(reply["recipient"] == row["recipient"], "candidate_verification_failed")
+        ops.save_json(state / "key-label.json", {"project":row["project"], "instance_id":row["instance"],
+                      "recipient":row["recipient"], "filename":row.get("filename"), "rotation_backup":row["backup"]})
         identity["backup_recipient"] = row["recipient"]
         ops.save_json(state / "site.json", identity)
         row["stage"] = "completed"

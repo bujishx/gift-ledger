@@ -54,6 +54,7 @@ function displayControls() {
   const state = current?.state;
   const fresh = !state || ["idle", "failed", "cancelled", "expired"].includes(state);
   el("inputs").hidden = !fresh && !["uploading", "awaiting_packet"].includes(state);
+  el("start").hidden = el("inputs").hidden;
   el("files").closest("label").hidden = state === "awaiting_packet";
   el("start").textContent = state === "awaiting_packet" ? "提交本次恢复钥匙" :
     state === "uploading" ? "继续上传并预检" : "上传并预检";

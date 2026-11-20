@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import subprocess
@@ -59,6 +60,19 @@ def decrypt_proof(folder, operation, project, instance, server):
             "chain": chain.hex()}
 
 
+def stage_key(folder, project, instance, operation, secret, recipient):
+    started = keys.json_bytes({"operation_id": operation, "success": False})
+    authorization = keys.json_bytes({"action": "root-key-change", "project": project,
+                                    "instance_id": instance, "operation_id": operation,
+                                    "backup_recipient": recipient})
+    proof = {"format":"gift-ledger-gui-key-import-completed-v1", "success":True,
+             "project":project, "instance_id":instance, "operation_id":operation, "backup_recipient":recipient,
+             "request_sha256":sha(authorization), "started_sha256":sha(started), "identity_sha256":sha(secret)}
+    for name, data in zip(backup_key.MEMBERS, (secret, started, keys.json_bytes(proof))):
+        keys.new_file(folder / name, data, 0o600)
+    backup_key.sync_directory(folder)
+
+
 def generate(folder, project, instance, operation):
     keys.private_metadata(folder, 0o700, directory=True)
     if not list(folder.iterdir()):
@@ -68,20 +82,42 @@ def generate(folder, project, instance, operation):
             recipient = keys.derive_recipient(key)
             lines = [line for line in keys.read_private(key).splitlines() if line and not line.startswith(b"#")]
             keys.require(len(lines) == 1 and lines[0].startswith(b"AGE-SECRET-KEY-1"), "invalid-generated-identity")
-            secret = lines[0] + b"\n"
-            started = keys.json_bytes({"operation_id": operation, "success": False})
-            authorization = keys.json_bytes({"action": "root-key-change", "project": project,
-                                            "instance_id": instance, "operation_id": operation,
-                                            "backup_recipient": recipient})
-            proof = {"format":"gift-ledger-gui-key-import-completed-v1", "success":True,
-                     "project":project, "instance_id":instance, "operation_id":operation, "backup_recipient":recipient,
-                     "request_sha256":sha(authorization), "started_sha256":sha(started), "identity_sha256":sha(secret)}
-            for name, data in zip(backup_key.MEMBERS, (secret, started, keys.json_bytes(proof))):
-                keys.new_file(folder / name, data, 0o600)
-            backup_key.sync_directory(folder)
+            stage_key(folder, project, instance, operation, lines[0] + b"\n", recipient)
     proof = receipt(folder, project, instance)
     keys.require(proof["operation_id"] == operation, "candidate-belongs-to-another-operation")
     return proof
+
+
+def existing_candidate(folder, target, context, ciphertext):
+    # Only the networkless helper mounts the site's dedicated transport private key.
+    # The terminal, docker arguments and journal receive ciphertext or public values.
+    wire = base64.b64decode(ciphertext, validate=True)
+    keys.require(0 < len(wire) <= 8192, "invalid-key-package")
+    decrypted = subprocess.run([keys.AGE, "-d", "-i", str(keys.TRANSFER / "target" / "identity.txt")],
+                               input=wire, capture_output=True, timeout=15)
+    keys.require(decrypted.returncode == 0, "key-package-decryption-failed")
+    body = keys.parse_json(decrypted.stdout)
+    keys.require(isinstance(body, dict) and set(body) == set(context) | {"identity", "candidate", "confirmation"}
+                 and all(body[k] == v for k, v in context.items())
+                 and body["target"] == target["recipient"], "key-package-binding-mismatch")
+    keys.require(isinstance(body["identity"], str) and re.fullmatch(r"AGE-SECRET-KEY-1[A-Z0-9]{40,100}\n",
+                 body["identity"]) and isinstance(body["confirmation"], str)
+                 and re.fullmatch(r"[0-9a-f]{48}", body["confirmation"]), "invalid-input-key")
+    secret = body["identity"].encode("ascii")
+    with tempfile.TemporaryDirectory(dir="/tmp") as scratch:
+        key = Path(scratch) / "selected"
+        keys.new_file(key, secret, 0o600)
+        recipient = keys.derive_recipient(key)
+    keys.require(recipient == body["candidate"], "candidate-public-key-mismatch")
+    if recipient == context["original"]:
+        return {"recipient":recipient, "unchanged":True}
+    keys.private_metadata(folder, 0o700, directory=True)
+    if not list(folder.iterdir()):
+        stage_key(folder, context["project"], context["instance"], context["operation"], secret, recipient)
+    checked = receipt(folder, context["project"], context["instance"])
+    keys.require(checked["operation_id"] == context["operation"] and checked["backup_recipient"] == recipient,
+                 "cancel-other-key-change-first")
+    return {"recipient":recipient, "challenge_hash":sha(body["confirmation"].encode("ascii"))}
 
 
 def promote(folder, project, instance, operation, old_hashes):
@@ -122,6 +158,14 @@ def perform(args):
         result = {"version":1, "action":mode, "project":project, "instance":instance, "operation":operation,
                   "origin":args[5], "receiver":public}
         extra = {}
+        if action in ("existing-target", "existing-import"):
+            target = keys.target_record(project, instance, keys.TRANSFER / "target")
+            context = {**result, "action":"existing", "target":target["recipient"],
+                       "original":owner["backup_recipient"]}
+            if action == "existing-target":
+                return {"recipient":context["original"], "sealed":encrypt(public, keys.json_bytes(context))}
+            candidate = existing_candidate(CANDIDATE, target, context, args[6])
+            return {**candidate, "old_hashes":old_hashes}
         if action == "recover":
             folder = DAILY
             result["verified"] = decrypt_proof(SOURCE, args[6], project, instance, args[7])

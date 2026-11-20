@@ -63,7 +63,6 @@
           <strong id="owner-project"></strong>
           <button class="text-button" id="owner-logout" type="button">退出站主登录</button>
         </div>
-        <div id="signed-out-security"></div>
         <details id="owner-security">
           <summary>设置、找回或关闭站主密码</summary>
           <form id="owner-password" class="form-stack" autocomplete="off">
@@ -98,18 +97,31 @@
         <output id="overview-note" aria-live="polite"></output>
         <section class="owner-grid" aria-label="本站运行情况">
           <article class="card"><h2>服务状态</h2><dl id="overview-services"></dl></article>
-          <article class="card"><h2>最近一次备份</h2><dl id="overview-backup"></dl><button class="text-button" type="button" data-jump="backup">查看备份操作</button></article>
           <article class="card"><h2>证书与存储</h2><dl id="overview-resources"></dl></article>
-          <article class="card"><h2>本站使用情况</h2><dl id="overview-counts" class="owner-counts"></dl><button class="text-button" type="button" data-jump="users">查看注册用户</button></article>
+          <article class="card"><h2>最近一次备份</h2><dl id="overview-backup"></dl><button class="text-button" type="button" data-jump="backup">查看备份操作</button></article>
+          <article class="card"><h2>本站使用情况</h2><dl id="overview-counts"></dl><button class="text-button" type="button" data-jump="users">查看注册用户</button></article>
         </section>
       </div>
       <div id="owner-tools" class="owner-panel">
         <div class="owner-heading" id="tools-heading" hidden><div><h1>维护操作</h1><p>管理本站备份钥匙、备份与恢复，以及站主登录方式。</p></div></div>
         <div class="owner-tool-grid">
       <section id="key-enrollment" class="maintenance-section" hidden aria-labelledby="key-title">
-        <h2 id="key-title">首次备份前登记钥匙</h2>
-        <p>从零建账的站和用旧备份恢复的新站都可以选。今后要恢复本站的备份，需要保管好这把原钥匙。</p>
-        <div class="maintenance-actions" id="key-choices">
+        <div class="key-status-heading"><h2 id="key-title">本站备份钥匙</h2><span class="key-badge" id="key-badge">读取中</span></div>
+        <p id="key-intro" hidden>从零建账的站和用旧备份恢复的新站都可以选。今后要恢复本站的备份，需要保管好这把原钥匙。</p>
+        <dl class="key-facts" id="key-facts" hidden>
+          <div><dt>当前公钥</dt><dd><code id="key-recipient"></code></dd></div>
+          <div><dt>登记时文件名</dt><dd id="key-filename"></dd></div>
+        </dl>
+        <div class="key-state" id="key-first"><small>本站首次备份</small><strong id="key-first-text">正在读取…</strong>
+          <button class="text-button" type="button" id="key-first-action" data-jump="backup" hidden>前往手动备份</button>
+        </div>
+        <div class="key-state" id="key-current-proof" hidden><small>当前钥匙的首份备份</small><strong id="key-current-text"></strong></div>
+        <div class="maintenance-actions key-actions" id="key-registered-actions" hidden>
+          <button class="outline" type="button" id="key-copy">复制完整公钥</button>
+          <button class="outline" type="button" id="key-check">核对本地钥匙</button>
+        </div>
+        <input id="key-check-file" type="file" aria-label="选择本地备份钥匙进行核对" hidden>
+        <div class="maintenance-actions key-actions" id="key-choices" hidden>
           <button class="outline" type="button" id="key-old">上传旧钥匙登记</button>
           <button class="outline" type="button" id="key-new">生成新钥匙登记</button>
         </div>
@@ -128,28 +140,42 @@
         <output id="key-feedback" class="auth-hint" aria-live="polite"></output>
         <button class="outline full" type="button" id="key-retry" hidden>继续核对登记结果</button>
       </section>
-      <details id="lifecycle-panel" class="maintenance-section" hidden>
-        <summary>管理已登记的备份钥匙</summary>
-        <p>需要本站服务器管理员授权。旧备份继续使用制作时对应的钥匙。</p>
-        <div class="maintenance-actions">
-          <button class="outline" type="button" id="lifecycle-recover">补领本站备份钥匙</button>
-          <button class="outline" type="button" id="lifecycle-prepare">更换今后备份的钥匙</button>
+      <section id="lifecycle-panel" class="maintenance-section" hidden aria-labelledby="lifecycle-heading">
+        <h2 id="lifecycle-heading"><button type="button" id="lifecycle-toggle" aria-expanded="true" aria-controls="lifecycle-body">管理已登记的备份钥匙</button></h2>
+        <div id="lifecycle-body">
+          <p>需要本站服务器管理员授权。旧备份继续使用制作时对应的钥匙。</p>
+          <p id="lifecycle-binding-note">正在读取本站钥匙登记状态。</p>
+          <div class="maintenance-actions" id="lifecycle-actions" hidden>
+            <button class="outline" type="button" id="lifecycle-recover">补领本站备份钥匙</button>
+            <button class="outline" type="button" id="lifecycle-prepare">更换今后备份的钥匙</button>
+          </div>
+          <div class="maintenance-actions" id="lifecycle-sources" hidden>
+            <button class="outline" type="button" id="lifecycle-existing">使用已有钥匙</button>
+            <button class="outline" type="button" id="lifecycle-generate">生成新钥匙</button>
+          </div>
+          <div class="form-stack" id="lifecycle-existing-field" hidden>
+            <label class="field">选择已有的备份原钥匙<input type="file" id="lifecycle-existing-file"></label>
+            <button type="button" class="outline" id="lifecycle-authorize-existing">核对所选钥匙</button>
+          </div>
+          <div class="form-stack" id="lifecycle-exchange" hidden>
+            <pre id="lifecycle-command"></pre>
+            <label class="field">本页一次性接收码<input id="lifecycle-receive" readonly></label>
+            <label class="field">管理员返回的加密回执<textarea id="lifecycle-sealed" rows="3" maxlength="16384" autocomplete="off" spellcheck="false"></textarea></label>
+            <button class="outline" type="button" id="lifecycle-open">打开加密回执</button>
+          </div>
+          <label class="field" id="lifecycle-package-field" hidden>加密钥匙包（复制到等待中的管理员终端）
+            <textarea id="lifecycle-package" rows="3" readonly spellcheck="false"></textarea>
+          </label>
+          <a class="outline full" id="lifecycle-download" hidden>保存备份私钥文件</a>
+          <div class="form-stack" id="lifecycle-verify" hidden>
+            <label class="field">重新打开本次保存的钥匙<input type="file" id="lifecycle-key"></label>
+            <label class="field" id="lifecycle-choose-backup" hidden>从指定备份中选择 .age 密文<input type="file" id="lifecycle-backup" accept=".age"></label>
+            <button class="primary" type="button" id="lifecycle-confirm">验证已保存的钥匙</button>
+          </div>
+          <output id="lifecycle-note" class="auth-hint" aria-live="polite"></output>
+          <button class="outline full" type="button" id="lifecycle-clear">清除本页临时资料</button>
         </div>
-        <div class="form-stack" id="lifecycle-exchange" hidden>
-          <pre id="lifecycle-command"></pre>
-          <label class="field">本页一次性接收码<input id="lifecycle-receive" readonly></label>
-          <label class="field">管理员返回的加密回执<textarea id="lifecycle-sealed" rows="3" maxlength="16384" autocomplete="off" spellcheck="false"></textarea></label>
-          <button class="outline" type="button" id="lifecycle-open">打开加密回执</button>
-        </div>
-        <a class="text-button" id="lifecycle-download" hidden>保存备份私钥文件</a>
-        <div class="form-stack" id="lifecycle-verify" hidden>
-          <label class="field">重新打开本次保存的钥匙<input type="file" id="lifecycle-key"></label>
-          <label class="field" id="lifecycle-choose-backup" hidden>从指定备份中选择 .age 密文<input type="file" id="lifecycle-backup" accept=".age"></label>
-          <button class="primary" type="button" id="lifecycle-confirm">验证已保存的钥匙</button>
-        </div>
-        <output id="lifecycle-note" class="auth-hint" aria-live="polite"></output>
-        <button class="text-button" type="button" id="lifecycle-clear">清除本页临时资料</button>
-      </details>
+      </section>
       <section class="owner-backup" id="backup-actions"><h2 id="backup-heading" hidden>手动备份</h2>
       <form id="maintenance" class="form-stack" autocomplete="off" hidden>
         <div id="legacy-owner-field" class="field">
@@ -166,6 +192,8 @@
       <output id="result" class="auth-hint" aria-live="polite"></output>
       <button id="download-backup" type="button" class="outline" hidden>下载已核验的备份 ZIP</button>
       </section>
+      <section id="account-shortcut" hidden><h2>协助找回业务账号</h2><p>只忘记登录名时可查找账号。重置业务密码前请核实本人。</p>
+        <div class="maintenance-actions"><button type="button" class="outline" data-jump="lookup">查看登录名</button><button type="button" class="outline" data-jump="reset">重置业务密码</button></div></section>
       <section id="site-restore" class="maintenance-section" hidden aria-labelledby="restore-title">
         <h2 id="restore-title">用旧备份恢复到本站</h2>
         <p>请在独立建立的空白站操作。先选择旧站的备份和当时对应的原钥匙，预检通过后再确认恢复。</p>
@@ -176,7 +204,6 @@
           <label class="field">创建这份备份时使用的原钥匙
             <input id="restore-key" type="file">
           </label>
-          <button id="restore-start" class="outline" type="button">上传并预检</button>
         </div>
         <output id="restore-preview" class="auth-hint" aria-live="polite"></output>
         <div class="form-stack" id="restore-approval" hidden>
@@ -187,13 +214,12 @@
         </div>
         <output id="restore-feedback" class="auth-hint" aria-live="polite"></output>
         <div class="maintenance-actions">
+          <button id="restore-start" class="outline" type="button" hidden>上传并预检</button>
           <button id="restore-status" class="outline" type="button">查看恢复进度</button>
           <button id="restore-cancel" class="outline" type="button" hidden>取消本次恢复</button>
         </div>
       </section>
-      <div id="signed-in-security" class="owner-security-card" hidden></div>
-      <section id="account-shortcut" hidden><h2>协助找回业务账号</h2><p>只忘记登录名时可查找账号。重置业务密码前请核实本人。</p>
-        <div class="maintenance-actions"><button type="button" class="outline" data-jump="lookup">查看登录名</button><button type="button" class="outline" data-jump="reset">重置业务密码</button></div></section>
+      <section id="signed-in-security" class="owner-security-card" hidden><h2>设置、找回或关闭站主密码</h2></section>
       <section id="certificate-help" hidden><h2>证书与续签</h2><p>站点总览显示网站证书到期时间。手动续签和设置自动续签的管理员命令在本站维护说明中。</p><p id="site-guide-name"></p>
         <button type="button" class="outline" data-jump="overview">查看证书有效期</button></section>
         </div>

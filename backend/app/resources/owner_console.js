@@ -59,7 +59,7 @@ function createOwnerConsole({request, expired}) {
       const lowBackupSpace = Number.isFinite(storage.backup_free_bytes) && Number.isFinite(storage.backup_required_bytes)
         && storage.backup_free_bytes < storage.backup_required_bytes;
       facts("overview-resources", [["网站证书",Number.isInteger(days)?(days<0?"已到期":"剩余 "+days+" 天"):unknown,Number.isInteger(days)&&days<=30],
-        ["到期时间",time(certificate.expires_at)],["账本可用空间",space(storage.ledger_free_bytes)],
+        ["到期时间",time(certificate.expires_at)],
         ["备份可用空间",space(storage.backup_free_bytes)+(lowBackupSpace?" · 低于启动备份所需的最低空间":""),lowBackupSpace]]);
       facts("overview-counts", [["注册用户",number(totals.users)],["联系人",number(totals.contacts)],["事件",number(totals.events)],["记账",number(totals.entries)]]);
       el("overview-note").textContent = "检查时间 "+time(data.checked_at)+" · 服务器采样 "+time(data.sampled_at);
@@ -164,6 +164,11 @@ function createOwnerConsole({request, expired}) {
     const focus=target==="backup"?el("backup-actions"):target==="accounts"?el("account-help"):null;
     focus?.scrollIntoView({block:"center"}); focus?.querySelector("button")?.focus({preventScroll:true});
   }));
+  const lifecycleToggle = el("lifecycle-toggle"), lifecycleBody = el("lifecycle-body");
+  lifecycleToggle.addEventListener("click", () => {
+    lifecycleBody.hidden = !lifecycleBody.hidden;
+    lifecycleToggle.setAttribute("aria-expanded", String(!lifecycleBody.hidden));
+  });
   el("refresh-overview").addEventListener("click",overview);
   el("more-users").addEventListener("click",loadUsers);
   el("usage-search").addEventListener("input",()=>{renderUsers(); if (el("usage-search").value.trim()) loadUsers();});
@@ -177,7 +182,10 @@ function createOwnerConsole({request, expired}) {
         "usage-rows","usage-cards","users-note","owner-about-content","site-guide-name"]) el(id).replaceChildren();
       document.body.classList.toggle("signed-in",Boolean(owner)); nav.hidden=!owner;
       for (const id of ["tools-heading","backup-heading","signed-in-security","account-shortcut","certificate-help"]) el(id).hidden=!owner;
-      el(owner?"signed-in-security":"signed-out-security").append(el("owner-security"));
+      el("owner-security").hidden = Boolean(owner);
+      el(owner ? "signed-in-security" : "owner-security").append(el("owner-password"));
+      lifecycleBody.hidden = false;
+      lifecycleToggle.setAttribute("aria-expanded", "true");
       if (owner) {
         el("site-guide-name").textContent=owner.instance ? "data/"+owner.project+"-"+owner.instance.slice(0,8)+"-本站维护说明.txt" : "在 data 中查找本站维护说明.txt";
         el("overview-identity").textContent=owner.project+" · 本站实例 "+short(owner.instance);

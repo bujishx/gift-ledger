@@ -136,8 +136,10 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
         paragraphs.append(
             f"站点维护网页    {url.rstrip('/')}/maintenance\n"
             "从下方领取本站登录码，或用已设置的站主密码登录。登录后在“站点总览”核对项目名和实例短号。打开“维护操作”使用钥匙、备份和恢复入口。\n"
-            "页面出现“首次备份前登记钥匙”时，从零建账的站和用旧备份恢复的新站都可以选择“上传旧钥匙登记”或"
+            "“本站备份钥匙”显示未登记时，从零建账的站和用旧备份恢复的新站都可以选择“上传旧钥匙登记”或"
             "“生成新钥匙登记”。新钥匙先下载保存，再选中保存的文件，点“确认登记到本站”。\n"
+            "已登记时，这张卡片显示登记时的文件名和当前公钥，可点“核对本地钥匙”确认手里的文件。"
+            "本站首次备份实际解密核验通过后，卡片会单独显示核验结果。\n"
             "看到“本站备份钥匙登记通过”后，点“开始备份”。等网站重新打开，点“查看备份结果”，"
             "再点“下载已核验的备份 ZIP”。请将 ZIP 和对应的原钥匙分别妥善保管。\n"
             "想把旧备份恢复到独立空站时，在目标空站的维护网页打开“维护操作”。选择旧站的备份和制作这份备份时用的原钥匙，"
@@ -156,8 +158,9 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
         paragraphs.append("本站备份钥匙补领与更换（群晖和 Ubuntu）\n"
                           "在本站维护页打开“维护操作 → 管理已登记的备份钥匙”。由服务器管理员在本站交互终端 sudo -i 后按提示运行对应命令。\n"
                           f"补领本站备份钥匙    {admin} recover-key{project_arg}\n"
-                          f"准备更换今后备份的钥匙    {admin} prepare-key-change{project_arg}\n"
-                          f"保存新钥匙后完成换钥    {admin} finish-key-change{project_arg}\n"
+                          f"使用已有钥匙换钥    {admin} prepare-existing-key-change{project_arg}\n"
+                          f"生成新钥匙换钥    {admin} prepare-key-change{project_arg}\n"
+                          f"核对所选钥匙后完成换钥    {admin} finish-key-change{project_arg}\n"
                           f"取消尚未完成的换钥    {admin} cancel-key-change{project_arg}\n"
                           "用备份结果核对实际解密核验成功。旧备份仍需使用制作时对应的原钥匙。")
     resolved = all((directory, station, config))

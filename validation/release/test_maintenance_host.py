@@ -54,6 +54,47 @@ class Dispatch(unittest.TestCase):
         self.addCleanup(manager.stop)
         return manager.start()
 
+    def test_first_verified_backup_survives_later_attempts_and_archive_retention(self):
+        state = self.root / ".giftledger-backup-state"
+        binding = {"project": self.cfg["project"], "instance_id": self.cfg["instance"],
+                   "server_uuid": str(uuid4())}
+        manifests = state / "bundle-manifests"
+        manifests.mkdir(parents=True)
+        root_fd = self.handles["base"]
+
+        def read(folder, name, limit):
+            return (self.root / folder / name).read_bytes()
+
+        def add(bid, when, target, stage="finished"):
+            folder = state / "runs" / bid
+            folder.mkdir(parents=True)
+            run = dict(target, session_id=bid, backup_id=bid, verify_id=uuid4().hex,
+                       bundle_id=bid, stage=stage, private_cleanup_pending=False)
+            (folder / "run.json").write_text(json.dumps(run))
+            (manifests / (bid + ".json")).write_text(json.dumps(dict(
+                target, backup_operation_id=bid, verify_operation_id=run["verify_id"], completed_at=when)))
+
+        def first():
+            return host.first_verified_backup(root_fd, binding, read, lambda date: date)
+
+        self.assertEqual(first(), {"state": "none"})
+        add("a" * 32, "2026-11-01T07:00:00+00:00", dict(binding, instance_id=str(uuid4())))
+        add("b" * 32, "2026-11-02T07:00:00+00:00", binding, "verified")
+        self.assertEqual(first(), {"state": "none"})
+        add("c" * 32, "2026-11-03T07:00:00+00:00", binding)
+        add("d" * 32, "2026-11-04T07:00:00+00:00", binding)
+        proof = first()
+        self.assertEqual(proof, {"state":"verified", "at":"2026-11-03T07:00:00+00:00", "backup_id":"c" * 32})
+        (manifests / ("c" * 32 + ".json")).unlink()
+        with patch.object(host.os, "listdir", side_effect=AssertionError("rescanned archived history")):
+            self.assertEqual(first(), proof)
+        (state / "first-verified-backup.json").unlink()
+        self.assertEqual(first(), {"state":"verified"})  # Historical timestamp unavailable.
+        (state / "first-verified-backup.json").write_text(json.dumps(dict(
+            binding, instance_id=str(uuid4()), first=proof)))
+        with self.assertRaisesRegex(host.HostError, "foreign_first_backup"):
+            first()
+
     def submit(self, contents=None):
         self.marker.write_text(contents or self.op + "\n")
         self.marker.chmod(0o600)

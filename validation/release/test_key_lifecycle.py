@@ -1,8 +1,9 @@
 """Only synthetic sites and generated ephemeral identities. Full crypto checks run in the Linux backup image."""
 import base64
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
 import hashlib
 import json
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -13,7 +14,7 @@ from unittest.mock import Mock, patch
 from uuid import uuid4
 
 REPO = Path(__file__).resolve().parents[2]
-for directory in ("deploy/single_yaml", "deploy/release/backup_ops", "deploy/release/gui_v2"):
+for directory in ("backend/app/services", "deploy/single_yaml", "deploy/release/backup_ops", "deploy/release/gui_v2"):
     sys.path.insert(0, str(REPO / directory))
 import backup_ops as ops
 import backup_site as site
@@ -25,6 +26,57 @@ import test_backup_store as fixtures
 
 
 class RotationGuards(unittest.TestCase):
+    def test_existing_file_confirmation_and_verified_trial_precede_binding_change(self):
+        project, instance = "qa", str(uuid4())
+        old, new, public = ("age1" + digit*58 for digit in "234")
+        token, filename, bundle = "a"*48, "保存的原钥匙.agekey", "e"*32
+        encoded_name = base64.b64encode(filename.encode()).decode()
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as scope:
+            root = Path(tmp).resolve()
+            host = Mock(project=project)
+            host.directories.return_value = root, root
+            profile = {"project":project,"instance_id":instance,"recipient":old}
+            install = {"project":project,"instance":instance,"origin":"https://192.0.2.1:9443"}
+            binding = {"project":project,"instance_id":instance,"server_uuid":str(uuid4()),"backup_recipient":old}
+            ops.save_json(root / "site.json", binding)
+            scope.enter_context(patch.object(lifecycle.os,"geteuid",return_value=0))
+            scope.enter_context(patch.object(lifecycle.os,"isatty",return_value=True))
+            scope.enter_context(patch.object(lifecycle,"discover",return_value=(host,profile)))
+            scope.enter_context(patch.object(lifecycle,"idle"))
+            scope.enter_context(patch.object(lifecycle,"private_dir",side_effect=lambda p:p))
+            scope.enter_context(redirect_stdout(io.StringIO()))
+            mock = scope.enter_context(patch.object(lifecycle, "helper"))
+            old_hashes = {key:"b"*64 for key in lifecycle.FIELDS}
+            target = {"recipient":old, "sealed":base64.b64encode(b"test").decode()}
+            mock.side_effect = [target, target,
+                                {"recipient":new, "challenge_hash":worker.sha(token.encode()), "old_hashes":old_hashes},
+                                target, {"recipient":new}]
+            def run(action, *inputs):
+                with patch("builtins.input", side_effect=inputs):
+                    lifecycle.run(None, root, install, action)
+            run("prepare-existing-key-change", "准备换钥", public, "")
+            self.assertEqual(ops.read_json(root/lifecycle.JOURNAL)["stage"], "cancelled")
+            run("prepare-existing-key-change", "准备换钥", public, "YWJj")
+            prepared = ops.read_json(root/lifecycle.JOURNAL)
+            self.assertEqual(prepared["stage"], "prepared")
+            run("prepare-existing-key-change", "准备换钥", public, "")
+            self.assertEqual(ops.read_json(root/lifecycle.JOURNAL), prepared)
+            self.assertEqual(ops.read_json(root/"site.json"), binding)
+            with self.assertRaises(ops.BackupOpsError):
+                run("finish-key-change", "确认换钥", "incorrect")
+            with patch.object(lifecycle, "candidate_backup", side_effect=ops.BackupOpsError("trial_failed")):
+                with self.assertRaisesRegex(ops.BackupOpsError, "trial_failed"):
+                    run("finish-key-change", "确认换钥", token+"."+encoded_name)
+            self.assertEqual(ops.read_json(root/"site.json"), binding)
+            self.assertFalse((root/"key-label.json").exists())
+            self.assertEqual(mock.call_count, 4)
+            with patch.object(lifecycle, "candidate_backup", return_value=bundle):
+                run("finish-key-change", "确认换钥")
+            self.assertEqual(ops.read_json(root/lifecycle.JOURNAL)["stage"], "completed")
+            self.assertEqual(ops.read_json(root/"site.json")["backup_recipient"], new)
+            self.assertEqual(ops.read_json(root/"key-label.json"),
+                             dict(project=project,instance_id=instance,recipient=new,filename=filename,rotation_backup=bundle))
+
     def test_retry_failed_dsm_registration_uses_same_saved_candidate_but_fresh_engine_session(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp).resolve(); origin = "7" * 32
@@ -98,6 +150,62 @@ class RotationGuards(unittest.TestCase):
 @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0 and Path(keys.AGE).is_file(),
                      "requires root in the isolated Linux backup image with age")
 class ActualAge(unittest.TestCase):
+    def test_import_previously_saved_identity_is_site_bound_and_same_key_is_noop(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp, ExitStack() as scope:
+            root = Path(tmp)
+            project, instance = "qa", str(uuid4())
+            origin, operation = "https://192.0.2.10:9443", uuid4().hex
+            daily, candidate, transfer = root/"daily", root/"candidate", root/"exchange"
+            for folder in (daily, candidate, transfer, transfer/"target"):
+                folder.mkdir(mode=0o700)
+            scope.enter_context(patch.object(worker, "DAILY", daily))
+            scope.enter_context(patch.object(worker, "CANDIDATE", candidate))
+            scope.enter_context(patch.object(keys, "TRANSFER", transfer))
+            old = worker.generate(daily, project, instance, uuid4().hex)["backup_recipient"]
+            for filepath in (transfer/"target"/"identity.txt", root/"browser", root/"selected"):
+                keys.command([keys.KEYGEN, "-o", str(filepath)])
+            transport = keys.derive_recipient(transfer/"target"/"identity.txt")
+            public = keys.derive_recipient(root/"browser")
+            selected = keys.derive_recipient(root/"selected")
+            started = dict(format=keys.TARGET_FORMAT, project=project, instance_id=instance,
+                           operation_id=uuid4().hex, started_at="2026-11-20T00:00:00+00:00")
+            raw = keys.json_bytes(started)
+            keys.new_file(transfer/"target"/"started.json", raw, 0o600)
+            keys.new_file(transfer/"target"/"completed.json", keys.json_bytes(dict(
+                started, recipient=transport, success=True, started_sha256=worker.sha(raw))), 0o600)
+            args = [project, instance, operation, public, origin]
+            response = worker.perform(["existing-target", *args])
+            opened = subprocess.run([keys.AGE, "-d", "-i", str(root/"browser")],
+                                    input=base64.b64decode(response["sealed"]), check=True, capture_output=True)
+            offer = json.loads(opened.stdout)
+            self.assertEqual((offer["original"], offer["target"]), (old, transport))
+            self.assertNotIn("identity", offer)
+            def package(path, **changes):
+                secret, = (s for s in path.read_text().splitlines() if s.startswith("AGE-SECRET-KEY-1"))
+                wire = dict(offer, identity=secret+"\n", candidate=keys.derive_recipient(path), confirmation="a"*48)
+                return worker.encrypt(transport, keys.json_bytes(dict(wire, **changes)))
+            noop = worker.perform(["existing-import", *args, package(daily/"identity.txt")])
+            self.assertTrue(noop["unchanged"])
+            self.assertEqual(list(candidate.iterdir()), [])
+            for wrong in (dict(origin=origin+"/"), dict(operation=uuid4().hex), dict(instance=str(uuid4())),
+                          dict(original=public), dict(receiver=selected), dict(candidate=old)):
+                with self.assertRaises(keys.KeyErrorSafe):
+                    worker.perform(["existing-import", *args, package(root/"selected", **wrong)])
+            boxed = package(root/"selected")
+            imported = worker.perform(["existing-import", *args, boxed])
+            self.assertEqual(imported["recipient"], selected)
+            self.assertEqual(imported["challenge_hash"], worker.sha(b"a"*48))
+            self.assertEqual(imported, worker.perform(["existing-import", *args, boxed]))
+            self.assertEqual(keys.derive_recipient(daily/"identity.txt"), old)
+            self.assertNotIn("AGE-SECRET-KEY-", json.dumps(imported))
+            with self.assertRaises(keys.KeyErrorSafe):
+                worker.perform(["existing-import", *args, package(root/"browser")])
+            applied = worker.perform(["commit", project, instance, operation, json.dumps(imported["old_hashes"])])
+            self.assertEqual(applied["recipient"], selected)
+            self.assertEqual(keys.derive_recipient(daily/"identity.txt"), selected)
+            with self.assertRaises(keys.KeyErrorSafe):
+                worker.perform(["existing-import", *args, boxed])
+
     def test_recover_and_rotate_preserve_historical_ciphertext_and_resume_partial_commit(self):
         case = fixtures.StoreTests()
         with tempfile.TemporaryDirectory(dir="/tmp") as d, ExitStack() as stack:

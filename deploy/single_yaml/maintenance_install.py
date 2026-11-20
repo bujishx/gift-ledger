@@ -27,7 +27,7 @@ BASE = Path("/root/.giftledger-maintenance")
 PYTHON = "/usr/bin/python3"
 SYSTEMCTL = "/usr/bin/systemctl"
 ARCHIVE = "maintenance-install.pyz"
-KEY_ACTIONS = ("recover-key", "prepare-key-change", "finish-key-change", "cancel-key-change")
+KEY_ACTIONS = ("recover-key", "prepare-key-change", "prepare-existing-key-change", "finish-key-change", "cancel-key-change")
 MEMBERS = ("maintenance_host.py", "ubuntu_certificate_timer.py", "owner_login_code.py", "dsm-backup.pyz")
 MAX_BYTES = 8 * 1024**2
 RESULT_FILES = {"backup": "result.json", "enrollment": "enrollment.json", "restore": "web-restore.json"}
@@ -616,6 +616,8 @@ def main(argv=None):
             "matching_published_site_backup_required": "本站找不到该编号的已核验备份。可先运行常规备份，再用新编号补领。",
             "recovery_private_key_or_backup_failed_verification": "用登记钥匙核验该备份失败。请选与当前登记钥匙匹配的本站备份，或先做一次常规备份。",
             "saved_key_confirmation_mismatch": "确认码与本站这次换钥不符。请在原维护页重新选中刚保存的钥匙，使用本次确认码。",
+            "cancel_other_key_change_first": "已准备另一种换钥方式。请先完成原换钥或运行 cancel-key-change 取消。",
+            "encrypted_key_package_required": "请在同一维护页打开加密回执，并复制完整的加密钥匙包。",
             "prepare_key_change_first": "请先在本站准备换钥并保存新钥匙。",
             "key_change_backup_not_verified": "首份新备份尚未通过核验。请核对本站备份和服务状态，再在本次操作上继续或取消。",
             "rotation_requires_completion": "此次换钥已进入备份或提交阶段。请用完成换钥命令核对并继续同一次操作。",

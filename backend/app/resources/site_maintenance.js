@@ -147,6 +147,7 @@ async function showRestore(token, project) {
   } catch {
     if (accountSession === token) {
       document.querySelector("#restore-inputs").hidden = true;
+      document.querySelector("#restore-start").hidden = true;
       document.querySelector("#restore-feedback").textContent = "网页恢复工具暂时无法载入，请刷新重试。";
       document.querySelector("#site-restore").hidden = false;
     }

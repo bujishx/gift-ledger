@@ -552,3 +552,33 @@ def test_enrollment_packet_binds_target_never_accepts_plaintext_and_receipt_retr
             )
         )
         assert client.get(path, headers=auth).status_code == 503
+
+
+def test_key_binding_is_owner_only_current_site_observation(site):
+    token = site.verified()
+    path = site.root / "status/overview.json"
+    instance = site.store.binding[1]
+    recipient = "age1" + "q" * 58
+    observed = dict(
+        format="giftledger-owner-overview-v1", project=site.project, instance=instance,
+        sampled_at=datetime.now(UTC).isoformat(),
+        backup_key=dict(state="registered", recipient=recipient, filename="旧钥匙.txt",
+                        first={"state": "verified"}, current_key_backup={"state": "none"}),
+    )
+    with site.client() as client:
+        route = BASE + "/key-enrollment/binding"
+        assert client.get(route).status_code in (401, 403)
+        assert client.get(route, headers=headers(token)).json()["state"] == "unknown"
+        path.write_text(json.dumps(observed))
+        response = client.get(route, headers=headers(token))
+        assert response.headers["cache-control"] == "no-store"
+        bound = response.json()
+        assert (bound["state"], bound["recipient"], bound["filename"]) == ("registered", recipient, "旧钥匙.txt")
+        assert bound["first"] == {"state": "verified"}
+        assert bound["current_key_backup"] == {"state": "none"}
+        observed["backup_key"]["filename"] = "../another-file"
+        path.write_text(json.dumps(observed))
+        assert client.get(route, headers=headers(token)).json()["filename"] is None
+        observed["instance"] = str(uuid4())
+        path.write_text(json.dumps(observed))
+        assert client.get(route, headers=headers(token)).json()["state"] == "unknown"

@@ -9,6 +9,96 @@ const download = element("download");
 const feedback = element("feedback");
 const retry = element("retry");
 let owner, generatedRecipient, operation, generation = 0, busy = false, downloadClicked = false;
+let binding = null, sampleTimer, requestNumber = 0;
+let justEnrolled = null;
+const checkFile = element("check-file");
+
+function verifiedText(proof) {
+  if (proof?.state === "none") return "尚无解密核验通过的记录";
+  if (proof?.state !== "verified") return "暂时无法核实";
+  const date = proof.at && new Date(proof.at);
+  return date && Number.isFinite(date.getTime())
+    ? "已解密核验通过　" + date.toLocaleString("zh-CN", {hour12:false})
+    : "已有备份通过核验，首次时间未记录";
+}
+
+function renderBinding() {
+  const registered = binding?.state === "registered";
+  const empty = binding?.state === "unregistered";
+  const label = element("badge");
+  label.textContent = registered ? "已登记" : empty ? "未登记" : binding ? "暂时无法核实" : "读取中";
+  label.classList.toggle("registered", registered);
+  element("intro").hidden = !empty;
+  element("facts").hidden = !registered;
+  const publicKey = registered ? binding.recipient : "";
+  element("recipient").textContent = publicKey ? publicKey.slice(0,8) + "…" + publicKey.slice(-8) : "";
+  element("filename").textContent = registered ? binding.filename || "未记录" : "";
+  element("registered-actions").hidden = !registered;
+  element("choices").hidden = !empty || !element("selection").hidden || busy;
+  element("first-text").textContent = binding ? verifiedText(binding.first) : "正在读取…";
+  element("first").classList.toggle("verified", binding?.first?.state === "verified");
+  element("first-action").hidden = !registered || binding.first?.state !== "none";
+  const current = registered && binding.current_key_backup;
+  element("current-proof").hidden = !current;
+  element("current-proof").classList.toggle("verified", current?.state === "verified");
+  element("current-text").textContent = current ? verifiedText(current) : "";
+  lifecycle.setRegisteredRecipient(registered ? publicKey : null, binding?.state);
+}
+
+async function refreshBinding(session = owner) {
+  if (!session || busy) return;
+  const sequence = ++requestNumber;
+  let value;
+  try {
+    const response = await session.request("key-enrollment/binding");
+    if (owner !== session || sequence !== requestNumber) return;
+    if ([401,403].includes(response.status)) { session.expired(); return; }
+    if (!response.ok) throw new Error();
+    value = await response.json();
+    if (value.project !== session.project || value.instance !== session.instance ||
+        !["unknown","registered","unregistered"].includes(value.state) ||
+        (value.state === "registered" && !/^age1[a-z0-9]{58}$/.test(value.recipient))) throw new Error();
+  } catch {
+    value = {state:"unknown"};
+  }
+  if (owner !== session || sequence !== requestNumber || busy) return;
+  if (justEnrolled) {
+    // A fresh receipt can precede the worker's next host observation. Never reopen first enrollment on an older sample.
+    if (value.state === "unregistered" && value.sampled_at === justEnrolled.priorSample) return;
+    if (value.state === "registered") justEnrolled = null;
+  }
+  if (value.state === "registered" && !element("selection").hidden && !operation) clear();
+  binding = value;
+  renderBinding();
+}
+
+element("copy").addEventListener("click", async () => {
+  if (binding?.state !== "registered") return;
+  const session = owner, recipient = binding.recipient;
+  try {
+    await navigator.clipboard.writeText(recipient);
+    if (owner === session) feedback.textContent = "已复制完整公钥。";
+  } catch { if (owner === session) feedback.textContent = "本站完整公钥：" + recipient; }
+});
+element("check").addEventListener("click", () => {
+  if (binding?.state !== "registered") return;
+  checkFile.value = "";
+  checkFile.click();
+});
+checkFile.addEventListener("change", async () => {
+  const selected = checkFile.files[0], session = owner;
+  if (!session || !selected) return;
+  try {
+    const {recipient} = await readIdentity(selected, await loadAge());
+    await refreshBinding(session);
+    if (session !== owner) return;
+    feedback.textContent = binding?.state !== "registered" ? "暂时无法核实本站当前登记的钥匙。"
+      : recipient === binding.recipient ? "这份本地钥匙与本站匹配。" : "这份本地钥匙与本站不匹配。";
+  } catch (error) {
+    if (session === owner) feedback.textContent = error instanceof KeyError ? error.message : "无法读取所选钥匙。";
+  } finally { checkFile.value = ""; }
+});
+window.addEventListener("focus", () => { if (owner && !document.hidden) refreshBinding(); });
 
 function clear() {
   generation++;
@@ -23,18 +113,28 @@ function clear() {
   file.disabled = false;
   retry.hidden = true;
   element("selection").hidden = true;
-  element("choices").hidden = false;
+  element("choices").hidden = binding?.state !== "unregistered";
   element("cancel").hidden = false;
   element("confirm").disabled = false;
   feedback.textContent = "";
 }
 
 export function setOwner(session) {
+  clearInterval(sampleTimer);
+  requestNumber++;
+  binding = null;
+  justEnrolled = null;
   clear();
+  checkFile.value = "";
   owner = session;
   lifecycle.setOwner(session);
+  renderBinding();
   panel.hidden = !session;
-  if (session) showLastResult(session, generation);
+  if (session) {
+    refreshBinding(session);
+    showLastResult(session, generation);
+    sampleTimer = setInterval(() => { if (!document.hidden) refreshBinding(session); }, 15000);
+  }
 }
 
 async function showLastResult(session, version) {
@@ -43,9 +143,7 @@ async function showLastResult(session, version) {
     if (!response.ok) return;
     const previous = await response.json();
     if (version !== generation || previous.project !== session.project) return;
-    if (previous.state === "succeeded") {
-      feedback.textContent = "服务器已保存本站的登记记录。要核对手中的原钥匙，请选择“上传旧钥匙登记”。";
-    } else if (["queued", "awaiting_packet", "verifying"].includes(previous.state)) {
+    if (["queued", "awaiting_packet", "verifying"].includes(previous.state)) {
       feedback.textContent = "本站有一个登记任务正在进行。可回原标签页继续。若原页已关闭，请等待任务结束后再登记。";
     } else if (previous.state === "needs_review") {
       feedback.textContent = stopped.needs_review;
@@ -65,14 +163,14 @@ function selectFile(fresh) {
 }
 
 element("old").addEventListener("click", () => {
-  if (!owner || busy) return;
+  if (!owner || busy || binding?.state !== "unregistered") return;
   clear();
   selectFile(false);
   file.click();
 });
 
 element("new").addEventListener("click", async () => {
-  if (!owner || busy) return;
+  if (!owner || busy || binding?.state !== "unregistered") return;
   clear();
   const version = generation;
   busy = true;
@@ -81,10 +179,13 @@ element("new").addEventListener("click", async () => {
     const age = await loadAge();
     const secret = await age.generateIdentity();
     const recipient = await age.identityToRecipient(secret);
+    const content = new Blob([secret, "\n"], {type:"application/octet-stream"});
+    const sum = new Uint8Array(await crypto.subtle.digest("SHA-256", await content.arrayBuffer()));
+    const shortHash = Array.from(sum.subarray(0,16), byte => byte.toString(16).padStart(2,"0")).join("");
     if (version !== generation) return;
     generatedRecipient = recipient;
-    download.href = URL.createObjectURL(new Blob([secret, "\n"], {type:"application/octet-stream"}));
-    download.download = owner.project + "-备份原钥匙.agekey";
+    download.href = URL.createObjectURL(content);
+    download.download = "key-" + shortHash + ".agekey";
     download.hidden = false;
     selectFile(true);
     feedback.textContent = "";
@@ -164,6 +265,7 @@ async function follow(op, version, age) {
         if (key.hash !== op.hash) throw new KeyError("所选文件已变化。请重新选择原钥匙。");
         const packet = await makePacket(age, op.target, op.id, key);
         if (version !== generation) return;
+        if (op.filename) packet.filename = op.filename;
         op.packet = packet;
         file.value = "";
         element("cancel").hidden = true;
@@ -196,7 +298,10 @@ async function enroll() {
       const {hash, recipient} = await readIdentity(file.files[0], age);
       if (version !== generation) return;
       if (generatedRecipient && generatedRecipient !== recipient) throw new KeyError("选中的不是刚生成的新钥匙，请选择刚下载的文件。");
-      operation = {id:crypto.randomUUID().replaceAll("-", ""), hash, recipient};
+      const selected = file.files[0].name;
+      const filename = selected && !/[\/\\\p{C}\p{Z}]/u.test(selected.replaceAll(" ", "")) && ![".",".."].includes(selected) &&
+        !selected.toUpperCase().includes("AGE-SECRET-KEY-") && new TextEncoder().encode(selected).length <= 255 ? selected : null;
+      operation = {id:crypto.randomUUID().replaceAll("-", ""), hash, recipient, filename};
       if (download.hasAttribute("href")) {
         URL.revokeObjectURL(download.href);
         download.removeAttribute("href");
@@ -208,7 +313,12 @@ async function enroll() {
     const message = await follow(operation, version, age);
     if (version !== generation) return;
     const instance = operation.target.instance_id;
+    justEnrolled = {priorSample:binding?.sampled_at};
+    binding = {state:"registered", recipient:operation.recipient, filename:operation.packet ? operation.filename : null,
+      first:{state:"unknown"}};
     clear();
+    renderBinding();
+    refreshBinding();
     feedback.textContent = message + "\n项目 " + owner.project + "，实例 " + instance + "。可运行手动备份。";
   } catch (error) {
     if (version !== generation) return;

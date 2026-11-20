@@ -75,6 +75,7 @@ def test_owner_navigation_preserves_the_maintenance_controls(site):
             super().__init__()
             self.ids = []
             self.views = set()
+            self.tags = {}
             self.business_links = []
             self.new_tab_icons = 0
 
@@ -82,6 +83,7 @@ def test_owner_navigation_preserves_the_maintenance_controls(site):
             attributes = dict(attrs)
             if identifier := attributes.get("id"):
                 self.ids.append(identifier)
+                self.tags[identifier] = tag
             if tag == "button" and "data-view" in attributes:
                 self.views.add(attributes["data-view"])
             if tag == "a" and "cross-site-link" in attributes.get("class", "").split():
@@ -94,6 +96,15 @@ def test_owner_navigation_preserves_the_maintenance_controls(site):
     controls.feed(client.get(BASE + "/page").text)
     assert len(set(controls.ids)) == len(controls.ids)
     assert controls.views == {"overview", "users", "tools", "about"}
+    tools = ["key-enrollment", "lifecycle-panel", "backup-actions", "account-shortcut",
+             "site-restore", "signed-in-security", "certificate-help"]
+    assert [i for i in controls.ids if i in tools] == tools
+    assert controls.tags["signed-in-security"] == "section"
+    assert controls.tags["owner-security"] == "details"
+    assert controls.tags["lifecycle-download"] == "a"
+    assert controls.tags["lifecycle-clear"] == "button"
+    overview = ["overview-services", "overview-resources", "overview-backup", "overview-counts"]
+    assert [i for i in controls.ids if i in overview] == overview
     assert len(controls.business_links) == controls.new_tab_icons == 3
     for link in controls.business_links:
         assert (link["href"], link["target"], link["rel"]) == ("/", "_blank", "noopener")
