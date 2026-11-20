@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""在 Mac 登记已有备份钥匙或生成新钥匙，经 SSH 核对本站的登记回执。"""
+"""在 Mac 选择“上传旧钥匙登记”或“生成新钥匙登记”，经 SSH 核对本站的登记回执。"""
 
 import argparse
 import base64
@@ -365,8 +365,8 @@ def choose_key():
 
 def choose_enrollment_method(project):
     choice = read_selection(f"首次为项目 {project} 登记日常备份钥匙，请选一种方式。\n"
-                            "1 生成新钥匙并登记\n"
-                            "2 登记旧钥匙\n"
+                            "1 生成新钥匙登记\n"
+                            "2 上传旧钥匙登记\n"
                             "请输入 1 或 2，直接回车或输入 q 退出：")
     check(choice and choice.lower() != "q", "已退出登记。")
     check(choice in ("1", "2"), "请输入 1 或 2 选择登记方式。")
@@ -388,7 +388,7 @@ def enrollment_path(args):
         check(value.lower() != "q", "已退出登记。")
         path = home / os.path.expanduser(value) if value else default
         if os.path.lexists(path):
-            print("这个路径已有文件。请输入其他文件名，或退出后选择“登记旧钥匙”使用原文件。")
+            print("这个路径已有文件。请输入其他文件名，或退出后选择“上传旧钥匙登记”使用原文件。")
         elif not path.parent.is_dir():
             print("找不到这个文件夹。请粘贴已有文件夹下的完整路径，或只输入一个文件名，保存在 Mac 个人目录。")
         else:
@@ -414,7 +414,7 @@ def add_site_options(parser):
 
 
 def site_endpoint(value):
-    message = "请输入网站地址.txt 中的完整 HTTPS IPv4 网址，例如 https://192.168.1.20:8443/。"
+    message = "请输入本站“网站地址.txt”中记录的完整 HTTPS IPv4 网址，例如 https://192.168.1.20:8443/。新版文件名以项目名和实例短号开头。"
     match = re.fullmatch(r"https://([0-9.]+)(?::([0-9]{1,5}))?/?", value, flags=re.IGNORECASE | re.ASCII)
     check(match, message)
     try:
@@ -555,14 +555,15 @@ def enrollment_worker_command(args, scratch_name):
     service = "restore-key" if args.restore_key else "backup-key"
     options = ["run", "--rm", "-T", "--no-deps", "-v", scratch_name + ":/work/exchange", service]
     if args.project_dir is None:
-        from owner_guide import host_setup
+        from owner_guide import ADDRESS, host_setup, public_name
 
         address, port = site_endpoint(args.site_url)
         url = f"https://{address}" + (f":{port}" if port != 443 else "") + "/"
         # Inspect and run under the same privilege grant. Host paths stay quoted
         # shell arguments on the server, including paths with spaces and quotes.
         script = ("set -eu\n" + host_setup(args.project, None, None, None) + "\n"
-                  'file="$station/data/网站地址.txt"\n'
+                  f'file="$station/data/{public_name(args.project, args.instance_id, ADDRESS)}"\n'
+                  '[ -e "$file" ] || [ -L "$file" ] || file="$station/data/网站地址.txt"\n'
                   f'[ -f "$file" ] && [ ! -L "$file" ] && [ "$(cat "$file")" = {shlex.quote(url)} ] || '
                   '{ echo "找到的项目网址与本站维护说明不符，请核对站点。" >&2; exit 1; }\n'
                   'cd "$dir"\n'
@@ -661,7 +662,7 @@ def main():
     add_site_options(parser)
     parser.add_argument("--restore-key", action="store_true", help="将源备份的原钥仅用于目标站这次恢复")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--key", type=Path, help="直接指定已有 age 私钥文件。未指定方式时，首次登记会提示选择旧钥匙或新钥匙")
+    group.add_argument("--key", type=Path, help="直接指定已有 age 私钥文件。未指定方式时，首次登记可选择“上传旧钥匙登记”或“生成新钥匙登记”")
     group.add_argument("--generate", type=Path, metavar="FILE", help="在 Mac 本地生成一把原钥匙，新文件必须尚不存在")
     args = parser.parse_args()
     if args.project_dir is None:

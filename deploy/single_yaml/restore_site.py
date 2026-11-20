@@ -2,6 +2,7 @@
 
 import json
 import argparse
+from datetime import datetime, timezone
 from contextlib import contextmanager, nullcontext
 import fcntl
 import os
@@ -12,6 +13,7 @@ from uuid import uuid4
 
 import backup_ops as ops
 import backup_site as site
+import site_about
 from restore_input import RecoveryError, RestoreInput, require
 
 
@@ -157,6 +159,8 @@ def run_bound(bindings, docker, project, backup_id, identity_role, state, inputs
             else:
                 authority.release_key()
 
+    about_dir = state.parent / site_about.DIRECTORY if authority else Path(site_about.RESTORE_TARGET)
+
     profile = bindings.runtime_profile()
     if expected_web:
         site.check_web_endpoint(docker, profile["containers"]["web"]["id"], *expected_web, "restore_site_port_mismatch")
@@ -192,6 +196,7 @@ def run_bound(bindings, docker, project, backup_id, identity_role, state, inputs
                 if not record.get("transfer_key_removed"):
                     record["transfer_key_removed"] = True
                     ops.save_json(journal, record)
+            site_about.update_for_restore(about_dir, project, record)
             return {**record["result"], "already_restored": True}
 
         try:
@@ -272,6 +277,7 @@ def run_bound(bindings, docker, project, backup_id, identity_role, state, inputs
                 if not verify_interrupted:
                     record["stage"] = "stopping"
                     ops.save_json(journal, record)
+                    site_about.update_for_restore(about_dir, project, record)
                     stop_original(profile, driver, record["original"])
                     if authority:
                         authority.finish_observing(driver)
@@ -303,11 +309,13 @@ def run_bound(bindings, docker, project, backup_id, identity_role, state, inputs
                 authority.allow_resume(driver, record, "verified")
             ops.restore_services(profile, driver, record["original"])
             record["stage"] = "completed"
+            record["verified_at"] = datetime.now(timezone.utc).isoformat()
             ops.save_json(journal, record)
             if identity_role == "restore_identity":
                 release_key()
                 record["transfer_key_removed"] = True
                 ops.save_json(journal, record)
+            site_about.update_for_restore(about_dir, project, record)
             return record["result"]
 
 

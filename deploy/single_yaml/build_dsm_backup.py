@@ -7,8 +7,9 @@ REPO = Path(__file__).resolve().parents[2]
 SITE = REPO / 'deploy/single_yaml'
 CORE = REPO / 'deploy/release/backup_ops'
 SITE_FILES = ('dsm_backup.py', 'dsm_certificate.py', 'certificate_auto.py', 'certificate_policy.py', 'certificate_site.py',
-              'backup_site.py', 'maintenance_enrollment.py', 'maintenance_restore.py', 'maintenance_restore_queue.py',
-              'restore_site.py', 'restore_input.py', 'restore_files.py', 'mac_restore_bundle.py', 'single_yaml_site.py', 'owner_guide.py', 'owner_login_code.py', 'service_images.json')
+              'backup_site.py', 'key_lifecycle.py', 'maintenance_enrollment.py', 'maintenance_restore.py', 'maintenance_restore_queue.py',
+              'restore_site.py', 'restore_input.py', 'restore_files.py', 'mac_restore_bundle.py', 'single_yaml_site.py', 'owner_guide.py', 'owner_login_code.py',
+              'station_guides.py', 'site_about.py', '安装前检查端口与网络.txt', 'service_images.json')
 CORE_FILES = ('backup_ops.py', 'backup_export.py', 'backup_store.py', 'windows_path_budget.py', 'restore_file_check.py')
 EVENT_FILES = ('__init__.py', 'target.py', 'catalog.py', 'io.py', 'adapter.py', 'provider.py', 'observer.py')
 

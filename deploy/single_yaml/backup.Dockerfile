@@ -16,8 +16,8 @@ COPY deploy/release/backup_ops/backup_ops.py deploy/release/backup_ops/backup_wo
 COPY deploy/release/gui_v2/maintenance.py deploy/release/gui_v2/certificate_renewal.py deploy/release/gui_v2/key_transfer.py /opt/gift-ledger-gui-v2/
 COPY deploy/release/backup_ops/restore_file_check.py /opt/gift-ledger-backup-ops/
 COPY deploy/release/gui_v2/restore_receipt_check.py /opt/gift-ledger-gui-v2/
-COPY deploy/single_yaml/backup_site.py deploy/single_yaml/backup_key.py deploy/single_yaml/service_images.json /opt/gift-ledger-install/
+COPY deploy/single_yaml/backup_site.py deploy/single_yaml/backup_key.py deploy/single_yaml/key_lifecycle_worker.py deploy/single_yaml/service_images.json /opt/gift-ledger-install/
 COPY deploy/single_yaml/certificate_site.py deploy/single_yaml/certificate_auto.py deploy/single_yaml/certificate_policy.py deploy/single_yaml/site_ca.py /opt/gift-ledger-install/
-COPY deploy/single_yaml/restore_site.py deploy/single_yaml/restore_worker.py deploy/single_yaml/restore_input.py deploy/single_yaml/restore_files.py /opt/gift-ledger-install/
+COPY deploy/single_yaml/site_about.py deploy/single_yaml/restore_site.py deploy/single_yaml/restore_worker.py deploy/single_yaml/restore_input.py deploy/single_yaml/restore_files.py /opt/gift-ledger-install/
 ENV PYTHONPATH=/opt/gift-ledger-backup-ops:/opt/gift-ledger-install:/opt/gift-ledger-gui-v2:/app/backend
 ENTRYPOINT ["/opt/venv/bin/python3.12", "/opt/gift-ledger-install/backup_site.py"]

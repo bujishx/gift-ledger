@@ -151,6 +151,11 @@ function switchMode() {
           {{ isRegister ? "已有账号？返回登录" : "没有账号？立即注册" }}
         </button>
       </div>
+      <div v-if="!isRegister" class="auth-switch">
+        <a class="cross-site-link" href="/maintenance" target="_blank" rel="noopener" aria-label="站点维护（在新标签打开）" title="站点维护（在新标签打开）">
+          站点维护<svg aria-hidden="true"><use :href="'/maintenance/link-icons.svg#new-tab'"/></svg>
+        </a>
+      </div>
       <p v-if="error" class="alert error" role="alert">{{ error }}</p>
       <p v-else-if="notice" class="alert success" role="status">{{ notice }}</p>
     </section>

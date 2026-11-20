@@ -1,5 +1,6 @@
 """Site-scoped dispatch, lifecycle selection, and durable evidence on DSM and Ubuntu."""
 import argparse
+import base64
 import contextlib
 import hashlib
 import json
@@ -61,6 +62,53 @@ class Dispatch(unittest.TestCase):
         value = json.loads((self.state / "result.json").read_text())
         self.assertEqual(value, json.loads((self.root / "status/result.json").read_text()))
         return value
+
+    @unittest.skipUnless(os.geteuid() == 0, "uses root-owned synthetic host receipts")
+    def test_snapshot_binds_disk_tls_and_verified_backup_and_excludes_private_fields(self):
+        self.cfg["station_inode"] = host.identity(self.root.stat())
+        for folder in ("data/mysql_data", "data/tls_config", "data/root_config/site/control", "backups",
+                       ".giftledger-backup-state/runs/" + self.op):
+            (self.root / folder).mkdir(mode=0o700, parents=True)
+        engine = self.root / ".giftledger-backup-state"
+        engine.chmod(0o700)
+        leaf = b"fixture-public-certificate-bytes"
+        actual = "-----BEGIN CERTIFICATE-----\n" + base64.b64encode(leaf).decode() + "\n-----END CERTIFICATE-----\n"
+        (self.root / "data/tls_config/fullchain.pem").write_text(actual)
+        (self.root / "data/root_config/site/control/identity.json").write_text(json.dumps({
+            "project": self.cfg["project"], "instance_id": self.cfg["instance"], "extra": "private-field",
+            "tls": {"not_after": "2032-04-03T17:00:00Z", "certificate_sha256": hashlib.sha256(leaf).hexdigest()}}))
+        backup = uuid4().hex
+        identity = dict(project=self.cfg["project"], instance_id=self.cfg["instance"], session_id=self.op)
+        path = engine / "runs" / self.op / "run.json"
+        path.write_text(json.dumps(dict(identity, stage="finished", bundle_id=backup, backup_id=backup)))
+        (engine / "last-result.json").write_text(json.dumps(dict(identity, bundle_id=backup, success=True,
+            services_restored=True, local_verified=True, private_cleanup_pending=False,
+            completed_at="2031-04-03T17:00:00Z", private_detail="private-field")))
+        with patch.object(host.subprocess, "run", return_value=SimpleNamespace(returncode=0,
+                        stdout=b"/fixture-web-1 fixture web running healthy\n")):
+            info = host.owner_snapshot(self.cfg)
+            self.assertEqual(info["certificate_expires_at"], "2032-04-03T17:00:00+00:00")
+            self.assertEqual((info["web_status"], info["backup_state"], info["backup_id"]), ("ok", "succeeded", backup))
+            self.assertTrue(info["decryption_verified"])
+            self.assertNotIn("private-field", str(info))
+            for name in ("ledger_free_bytes", "backup_free_bytes"):
+                self.assertGreaterEqual(info[name], 0)
+            path.write_text(json.dumps(dict(identity, instance_id=str(uuid4()))))
+            (self.root / "data/tls_config/fullchain.pem").write_text("unrelated")
+            info = host.owner_snapshot(self.cfg)
+            self.assertNotIn("backup_state", info)
+            self.assertNotIn("certificate_expires_at", info)
+
+    def test_unavailable_optional_overview_does_not_interrupt_a_backup_receipt(self):
+        value = host.result(self.cfg, self.op, "failed", "synthetic_preflight_failed")
+        publish = host.publish
+        def reject_optional(directory, target, content):
+            if target == "backup-observation.json":
+                raise OSError("unavailable optional observation")
+            return publish(directory, target, content)
+        with patch.object(host, "publish", side_effect=reject_optional):
+            host.save(self.state, self.handles, value)
+        self.assertEqual(self.latest(), value)
 
     def test_download_zip_only_replaces_the_previous_file_after_all_five_hashes_match(self):
         bundle_id = uuid4().hex

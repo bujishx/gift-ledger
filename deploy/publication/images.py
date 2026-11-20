@@ -243,7 +243,9 @@ def build_candidate(out, commit):
         "web.build",
     )
     try:
-        build("api", api_file)
+        from datetime import datetime, timezone
+        build("api", api_file, GIFTLEDGER_BUILD_COMMIT=commit,
+              GIFTLEDGER_BUILD_DATE=datetime.now(timezone.utc).date().isoformat())
         build("web", web_file)
     finally:
         api_file.unlink(missing_ok=True)
@@ -338,6 +340,14 @@ def has_windows_tools():
     return (ROOT / "deploy/single_yaml/windows_site.py").is_file()
 
 
+NETWORK_SOURCE = Path("deploy/single_yaml/安装前检查端口与网络.txt")
+NETWORK_ASSET = "Install-network.zh.txt"
+
+
+def has_network_guide():
+    return (ROOT / NETWORK_SOURCE).is_file()
+
+
 def write_site_tools_zip(path, yaml_bytes, *, windows=False):
     with zipfile.ZipFile(path, "x", compression=zipfile.ZIP_DEFLATED) as z:
 
@@ -381,8 +391,11 @@ def release_files(out, refs, repository, version):
     yaml = f"# {version} · Linux/amd64\n" + render(refs).replace(
         "单文件安装候选版", "单文件安装", 1
     )
+    yaml = yaml.replace('GIFTLEDGER_BUILD_VERSION: "开发版"', f'GIFTLEDGER_BUILD_VERSION: "{version.removeprefix("v")}"')
     yaml_bytes = yaml.encode()
     (out / "docker-compose.yml").write_bytes(yaml_bytes)
+    if has_network_guide():
+        (out / NETWORK_ASSET).write_bytes(selected_file(NETWORK_SOURCE))
     write_site_tools_zip(out / "mac-site-tools.zip", yaml_bytes)
     if has_windows_tools():
         write_site_tools_zip(out / "windows-site-tools.zip", yaml_bytes, windows=True)

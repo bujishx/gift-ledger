@@ -1,0 +1,74 @@
+往来有礼 · 安装前检查端口与网络
+
+如果想在一台服务器上建第二个站，先另取项目名、另选 HTTPS 端口、另建专用空文件夹。两个站可以共用服务器的局域网 IP。先做第 1 项。只有 Docker 报创建网络失败、或管理员需要规划子网时，才需要第 2、3 项。
+
+1　看哪些端口已在使用
+
+Ubuntu：打开服务器终端，输入 sudo -i。群晖：通过 SSH 登录 DSM，再输入 sudo -i。请在准备安装网站的那台服务器执行下面整段。它会列出 TCP 监听和所有已创建容器配置的 TCP 端口，包括已停止容器。检查仅需读取，不需要停用任何网站。
+
+(
+set -eu
+d=/var/packages/ContainerManager/target/usr/bin/docker
+[ -x "$d" ] || d=/usr/bin/docker
+printf '\n服务器上正在监听的 TCP 地址和端口\n'
+if command -v ss >/dev/null 2>&1; then
+  ss -lnt
+else
+  netstat -lnt
+fi
+printf '\nDocker 配置的宿主端口（容器、状态、宿主 IP、宿主端口、容器端口）\n'
+ids=$("$d" --host unix:///var/run/docker.sock ps -aq)
+for id in $ids; do
+  "$d" --host unix:///var/run/docker.sock inspect --type container --format '{{ $c := . }}{{range $port, $rules := .HostConfig.PortBindings}}{{range $rules}}{{printf "%s %s  %s  %s  -> %s\n" $c.Name $c.State.Status .HostIp .HostPort $port}}{{end}}{{end}}' "$id"
+done
+)
+
+例如准备在 192.168.1.20 的 8443 端口开站，就查监听结果的 Local Address 一栏和 Docker 结果的“宿主端口”一栏。IPv4 对应的具体地址、0.0.0.0、* 或空的宿主 IP 都要检查。IPv6 的 [::]、::: 或 * 也可能同时接收 IPv4。遇到同号端口时另选最省事。Docker 结果中容器端的 443/tcp 可以在不同站重复。群晖有时将配置中的容器端显示为 443/，仍按同一行的宿主 IP 和宿主端口判定占用。正在运行的容器可在 Container Manager 的端口映射中核对 443/tcp。若显示 udp 而没有 tcp，仅该 UDP 项不会占用 HTTPS 的 TCP 端口。
+
+示例 A　容器显示 /family-web-1 exited  192.168.1.20  8443  -> 443/tcp。它启动时还要用 8443，请另选端口。
+示例 B　两个列表都没有该地址的 8444，已有项目配置也没预留它。可以选 8444，再启动项目确认。列表只反映检查时刻。DSM 在 Container Manager → 项目 → YAML 配置 中也可查看尚未创建容器的项目。Ubuntu 检查准备保留的 Compose 文件。Docker 清单之外还可能有仅保存了 YAML 的项目和其他排程占用的端口。
+
+若出现“address already in use”或“port is already allocated”，重新检查端口并修改 YAML 顶部的 x-site-port。若显示“permission denied”、找不到命令或无法连接 Docker，先恢复检查条件。不能据此认定端口空闲。
+
+2　Docker 无法创建 private 或 front 网络
+
+每个站默认有 private 和 front 两个项目网络。private 隔离内部服务，web 同时加入两个网络并发布 HTTPS 端口。请保留默认自动分配。报错“could not find an available, non-overlapping IPv4 address pool”或“all predefined address pools have been fully subnetted”表示 Docker 没有可用的不重叠子网。只改网站端口不会释放子网。
+
+在同一个管理员终端复制以下只读检查。先看服务器的局域网与路由，再列出所有 Docker 网络及其子网。另核对路由器和 VPN 预留的远端网段，尤其是当前没有连上的 VPN。
+
+(
+set -eu
+d=/var/packages/ContainerManager/target/usr/bin/docker
+[ -x "$d" ] || d=/usr/bin/docker
+ip -4 addr show
+ip -4 route show table all
+nets=$("$d" --host unix:///var/run/docker.sock network ls -q)
+for n in $nets; do
+  "$d" --host unix:///var/run/docker.sock network inspect --format '{{.Name}}  {{range .IPAM.Config}}{{.Subnet}} {{end}}' "$n"
+done
+)
+
+先找已经确认退役的站，按那个站自己的删除指南释放专属网络。运行中的站或以后还要启动的站都应保留。网络列表中有空子网项属于正常现象。不要按列表顺序或仅凭网络名猜测归属。
+
+3　确需自行规划时怎样填写 networks
+
+先选两个由管理员确认空闲、容量足够的私有 IPv4 子网。两个子网之间以及它们和其他站、Docker 网桥、局域网、VPN、静态路由的实际目的网段均不能重叠。例如一个 /24 已经覆盖它里面的两个 /27，换个末尾数字不能解决这种包含关系。默认路由 0.0.0.0/0 表示缺省出口，不是可分配的子网。只在建这个新站之前替换 YAML 文件末尾的 networks 段。服务中原有的网络列表和端口映射照常保留。
+
+下面两个 CIDR 仅作格式示例，必须分别换成你已经核对的两个网段。下一座站要重新核对和分配。
+
+networks:
+  private:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.240.0/27
+  front:
+    ipam:
+      config:
+        - subnet: 172.30.240.32/27
+
+在 YAML 所在目录，Ubuntu 可执行 docker compose config --quiet，群晖管理员终端可执行 /var/packages/ContainerManager/target/usr/bin/docker compose config --quiet。语法通过后，再启动这一个项目，用它的实际网址验收。站点正在运行时更改子网涉及重建网络，应另行安排维护时间。
+
+参考文档
+Docker 发布端口　https://docs.docker.com/engine/network/port-publishing/
+Compose 网络、internal 与 ipam　https://docs.docker.com/reference/compose-file/networks/

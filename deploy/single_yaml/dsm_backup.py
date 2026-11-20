@@ -125,18 +125,26 @@ def reconcile_events(reports, package, docker):
     ops.fsync_directory(reports)
 
 
-def run(project, expected_station=None, *, expected_instance=None, engine_session=None, recover=False):
+def run(project, expected_station=None, *, expected_instance=None, engine_session=None, recover=False, key_change=None):
     package = target.Package.discover(backup_events=True)
     docker = ops.Docker(package.target / "usr/bin/docker")
     host = HostSite(docker, project, expected_station)
     os.environ.update(host.settings)
     site.single_yaml_site.project_host(project)
     profile = host.profile()
+    if key_change is not None:
+        profile = site.candidate_profile(host, profile, key_change)
+        ops.require(profile["key_change_session"] == engine_session, "candidate_backup_session_mismatch")
     if expected_instance is not None:
         ops.require(profile["instance_id"] == expected_instance, "maintenance_instance_mismatch")
     profile["engine_id"] = json.loads(docker.call("info", "--format", "{{json .ID}}"))
     ops.require(isinstance(profile["engine_id"], str) and profile["engine_id"], "docker_engine_identity_missing")
     binding = EventBinding(profile, package)
+    if key_change is not None:
+        # Detect a stale DSM project registration before claiming a new backup session.
+        # The stop provider verifies it again under the engine lock immediately before use.
+        for role in ("web", "api"):
+            binding.checked_registration(role)
     state, _ = host.directories()
     reports = ops.mkdir(state / "dsm-events")
     io.checked_directory(reports)

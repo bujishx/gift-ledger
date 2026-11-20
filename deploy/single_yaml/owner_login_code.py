@@ -62,7 +62,11 @@ def require(condition, message):
 
 def binding(project, instance, origin):
     require(re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", project), "项目名无效。")
-    require(str(UUID(instance)) == instance, "站点实例无效。")
+    try:
+        canonical = str(UUID(instance))
+    except (TypeError, ValueError, AttributeError):
+        raise RecoveryError("站点实例无效。") from None
+    require(canonical == instance, "站点实例无效。")
     match = re.fullmatch(r"https://([0-9.]+)(?::([0-9]+))?", origin)
     require(match, "请使用本站维护说明中的 HTTPS 地址。")
     ip = str(ipaddress.IPv4Address(match[1]))
@@ -106,9 +110,15 @@ def verify_site_metadata(station, site):
     with directory(station / "data") as public, directory(station / "data/root_config/site/control") as control:
         raw, _ = read_file(control, "identity.json")
         identity = json.loads(raw)
-        address, _ = read_file(public, "网站地址.txt")
-        require(all(identity[k] == site[k] for k in ("project", "instance_id"))
-                and address.decode("utf-8").strip() == site["origin"] + "/",
+        binding(site["project"], site["instance_id"], site["origin"])
+        require(all(identity[k] == site[k] for k in ("project", "instance_id")), "实例、项目或网址与已准备的本站不符。")
+        # This signed stand-alone helper is also run directly with python -I.
+        name = f'{site["project"]}-{site["instance_id"][:8]}-网站地址.txt'
+        try:
+            address, _ = read_file(public, name)
+        except FileNotFoundError:
+            address, _ = read_file(public, "网站地址.txt")
+        require(address.decode("utf-8").strip() == site["origin"] + "/",
                 "实例、项目或网址与已准备的本站不符。")
 
 
@@ -218,6 +228,10 @@ def verify_services(api, web, station, site, ip, port):
             and all([s for s in env if s.startswith(k + "=")] == [k + "=" + v] for k, v in expect.items()),
             "API 用户或站点配置不符。")
     allowed = {IPC_TARGET, IPC_TARGET + "/requests", OWNER_TARGET, "/var/lib/gift-ledger", "/run/secrets"}
+    info_target = "/run/giftledger-site-info"
+    if any(m["Destination"] == info_target for m in api["Mounts"]):
+        require(has_mount(api, info_target, station / ".giftledger-site-info", False), "本站标识挂载与该站点不符。")
+        allowed.add(info_target)
     require(all((m["Type"] == "bind" and m["Destination"] in allowed)
                 or (m["Type"] == "tmpfs" and m["Destination"] in {"/tmp", "/var/lib/mysql"})
                 for m in api["Mounts"]), "API 含不属于本站的挂载。")

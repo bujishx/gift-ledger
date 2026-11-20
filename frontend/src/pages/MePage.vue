@@ -124,7 +124,6 @@ export const ME_DICTIONARY_MENU = [
 import { computed, onMounted, ref, toRefs } from 'vue';
 import { money, stamp } from '../lib/format.js';
 import { datePrecisionCounts } from '../lib/legacyImport.js';
-import { SITE_VERSION } from '../lib/siteVersion.js';
 import SiteAbout from '../components/SiteAbout.vue';
 import MeWorkflowSteps from './MeWorkflowSteps.vue';
 import RowMenu from '../components/RowMenu.vue';
@@ -694,7 +693,7 @@ function onDictionaryMenu(item, action) {
     <footer class="me-about-version" aria-label="网站版本信息">
       <span>关于往来有礼</span>
       <button type="button" class="version-link" @click="versionInfoOpen=true" aria-label="查看版本详情">
-        版本 v{{ SITE_VERSION.version }} <span aria-hidden="true">›</span>
+        版本与站点信息 <span aria-hidden="true">›</span>
       </button>
     </footer>
     <SiteAbout v-if="versionInfoOpen" @close="versionInfoOpen=false" />

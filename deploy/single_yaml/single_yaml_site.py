@@ -2,6 +2,8 @@
 
 import configparser
 from contextlib import contextmanager
+import fcntl
+import hashlib
 import ipaddress
 import json
 import os
@@ -16,9 +18,11 @@ import owner_guide
 
 DATA = Path("/station/data")
 ROLES = ("root_config", "app_secrets", "db_secrets", "tls_config", "mysql_data", "app_data")
-ADDRESS = "网站地址.txt"
+ADDRESS = owner_guide.ADDRESS
 LEGACY_CERTIFICATE = "本站公开证书.crt"
-ROOT_CERTIFICATE = "本站根证书.cer"
+ROOT_CERTIFICATE = owner_guide.ROOT_CERTIFICATE
+DOCUMENT_RECEIPT = ".giftledger-public-documents.json"
+DOCUMENT_LIMIT = 512 * 1024
 
 
 class SiteError(ValueError):
@@ -111,13 +115,19 @@ def check_directory():
         raise SiteError("站点的数据目录必须是实际目录")
     names = {child.name for child in DATA.iterdir()}
     public = {ADDRESS, LEGACY_CERTIFICATE, ROOT_CERTIFICATE, owner_guide.FILENAME}
-    if names - (set(ROLES) | public):
-        raise SiteError("所选数据目录还有其他文件，请选择本站专用的空目录")
     for role in names.intersection(ROLES):
         if not stat.S_ISDIR((DATA / role).lstat().st_mode):
             raise SiteError("站点数据目录不能包含链接或非目录文件")
     prepared = DATA / "root_config" / "layout" / "prepare-completed.json"
-    if not prepared.is_file():
+    established = prepared.is_file()
+    if established:
+        identity = read_identity(os.environ["GIFTLEDGER_PROJECT"])
+        public.update(owner_guide.public_name(identity["project"], identity["instance_id"], name)
+                      for name in (ADDRESS, ROOT_CERTIFICATE, owner_guide.FILENAME))
+        public.add(owner_guide.GUIDES)
+    if names - (set(ROLES) | public):
+        raise SiteError("所选数据目录还有其他文件，请选择本站专用的空目录")
+    if not established:
         if names.intersection(public):
             raise SiteError("发现已有站点资料，请核对原数据目录")
         # Some Compose engines precreate empty bind sources. Refuse foreign
@@ -146,27 +156,89 @@ def check_directory():
 
 
 def publish_file(path, content, limit, mode, temporary_dir):
-    if path.exists() or path.is_symlink():
-        info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > limit:
-            raise SiteError("公开资料路径异常，请核对站点目录")
-        if path.read_bytes() == content:
-            return
-    with NamedTemporaryFile(dir=temporary_dir, delete=False) as output:
-        tmp = Path(output.name)
+    with opened_directory(path.parent) as parent:
         try:
-            output.write(content)
-            output.flush()
-            os.fsync(output.fileno())
-            os.fchmod(output.fileno(), mode)
-            tmp.replace(path)
-        finally:
-            tmp.unlink(missing_ok=True)
+            if read_regular(path.name, limit, parent=parent) == content:
+                return
+        except FileNotFoundError:
+            pass
+        with NamedTemporaryFile(dir=temporary_dir, delete=False) as output:
+            tmp = Path(output.name)
+            try:
+                output.write(content)
+                output.flush()
+                os.fchmod(output.fileno(), mode)
+                os.fsync(output.fileno())
+                os.replace(tmp, path.name, dst_dir_fd=parent)
+                os.fsync(parent)
+            finally:
+                tmp.unlink(missing_ok=True)
 
 
-def publish_public(name, content):
-    limit = 512 * 1024 if name == owner_guide.FILENAME else 16384
-    publish_file(DATA / name, content, limit, 0o644, DATA / "root_config/maintenance")
+@contextmanager
+def opened_directory(path):
+    fd = os.open(path, os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def read_regular(path, limit, *, parent=None):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise SiteError("站点公开资料路径异常，请核对站点目录") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > limit:
+            raise SiteError("站点公开资料或回退记录异常，请核对站点目录")
+        with open(fd, "rb", closefd=False) as stream:
+            data = stream.read(limit + 1)
+        if len(data) != info.st_size:
+            raise SiteError("站点文件在核对期间发生变化")
+        return data
+    finally:
+        os.close(fd)
+
+
+def read_identity(project):
+    path = DATA / "root_config/site/control/identity.json"
+    if path.resolve() != path:
+        raise SiteError("站点身份路径包含链接")
+    identity = json.loads(read_regular(path, 65536))
+    if identity.get("project") != project:
+        raise SiteError("项目与已安装的站点身份不符")
+    owner_guide.public_name(project, identity["instance_id"], ADDRESS)
+    return identity
+
+
+def public_path(project, instance, name):
+    named = DATA / owner_guide.public_name(project, instance, name)
+    return named if os.path.lexists(named) else DATA / name
+
+
+def publish_public(identity, name, content):
+    limit = DOCUMENT_LIMIT if name == owner_guide.FILENAME else 16384
+    named = owner_guide.public_name(identity["project"], identity["instance_id"], name)
+    scratch = DATA / "root_config/maintenance"
+    publish_file(DATA / named, content, limit, 0o644, scratch)
+    # Previously installed v1.7 host programs and scheduled tasks still read
+    # the fixed names until those host tools are upgraded.
+    if os.path.lexists(DATA / ADDRESS):
+        publish_file(DATA / name, content, limit, 0o644, scratch)
+
+
+def guide_names(project, instance):
+    return {"安装前检查端口与网络.txt", owner_guide.public_name(project, instance, "如何彻底删除本站.txt")}
+
+
+def check_guide_dir(directory, allowed):
+    if (not stat.S_ISDIR(directory.lstat().st_mode)
+            or any(child.name not in allowed for child in directory.iterdir())):
+        raise SiteError("站主指南目录含其他文件或链接，请核对后继续")
 
 
 def publish_guide(project, url, identity, *, refresh=False):
@@ -203,18 +275,100 @@ def publish_guide(project, url, identity, *, refresh=False):
     text = owner_guide.render(project, url, identity, project_dir=str(directory or ""),
                               site_dir=str(station or "."), config_file=str(config or ""),
                               owner_login=os.environ.get("GIFTLEDGER_OWNER_MAINTENANCE_GUIDE") == "1")
-    publish_public(owner_guide.FILENAME, text.encode())
+    publish_public(identity, owner_guide.FILENAME, text.encode())
+    import station_guides
+    guides = station_guides.documents(project, url, identity["instance_id"], project_dir=directory,
+                                      site_dir=station, config_file=config)
+    guide_dir = DATA / owner_guide.GUIDES
+    allowed = guide_names(project, identity["instance_id"])
+    if set(guides) != allowed:
+        raise SiteError("本站指南清单与项目不符")
+    guide_dir.mkdir(mode=0o755, exist_ok=True)
+    check_guide_dir(guide_dir, allowed)
+    scratch = DATA / "root_config/maintenance"
+    files = {owner_guide.public_name(project, identity["instance_id"], owner_guide.FILENAME):
+             hashlib.sha256(text.encode()).hexdigest()}
+    for name, content in guides.items():
+        publish_file(guide_dir / name, content, DOCUMENT_LIMIT, 0o644, scratch)
+        files[owner_guide.GUIDES + "/" + name] = hashlib.sha256(content).hexdigest()
+    receipt = dict(binding, files=files)
+    publish_file(DATA.parent / DOCUMENT_RECEIPT, json.dumps(receipt, sort_keys=True).encode(), 8192, 0o600, scratch)
+
+
+def rollback_public(project, url, identity):
+    instance = identity["instance_id"]
+    guide_dir = DATA / owner_guide.GUIDES
+    receipt_path = DATA.parent / DOCUMENT_RECEIPT
+    keys = [ADDRESS, owner_guide.FILENAME]
+    if "profile" in identity["tls"]:
+        keys.append(ROOT_CERTIFICATE)
+    named = {key: DATA / owner_guide.public_name(project, instance, key) for key in keys}
+    # On restart the old files may already exist and some verified new files
+    # may have been removed. The original receipt remains until the last unlink.
+    contents = {key: read_regular(public_path(project, instance, key), DOCUMENT_LIMIT) for key in keys}
+    if contents[ADDRESS].decode().strip() != url + "/":
+        raise SiteError("站点网址不符，已停止还原旧版文件名")
+    if ROOT_CERTIFICATE in contents and hashlib.sha256(contents[ROOT_CERTIFICATE]).hexdigest() != identity["tls"]["root_sha256"]:
+        raise SiteError("根证书与本站登记的指纹不符")
+    if os.path.lexists(receipt_path):
+        receipt = json.loads(read_regular(receipt_path, 8192))
+        allowed = guide_names(project, instance)
+        expected = {owner_guide.GUIDES + "/" + name for name in allowed} | {named[owner_guide.FILENAME].name}
+        if (receipt.get("project") != project or receipt.get("instance_id") != instance
+                or set(receipt["files"]) != expected):
+            raise SiteError("回退记录与本站或本站文件清单不符")
+        if os.path.lexists(guide_dir):
+            check_guide_dir(guide_dir, allowed)
+        for name, digest in receipt["files"].items():
+            path = DATA / name
+            if os.path.lexists(path) and hashlib.sha256(read_regular(path, DOCUMENT_LIMIT)).hexdigest() != digest:
+                raise SiteError("站主文档已被编辑，请先另存并核对后再回退")
+    elif not any(os.path.lexists(p) for p in [guide_dir, *named.values()]):
+        return
+    else:
+        raise SiteError("缺少本站文档回退记录，请先用新版 prepare 核对本站")
+    for key, content in contents.items():
+        publish_file(DATA / key, content, DOCUMENT_LIMIT, 0o644, DATA / "root_config/maintenance")
+    for path in named.values():
+        path.unlink(missing_ok=True)
+    if os.path.lexists(guide_dir):
+        # Pin the directory while removing just the two known files.
+        with opened_directory(guide_dir) as parent:
+            for name in allowed:
+                try:
+                    os.unlink(name, dir_fd=parent)
+                except FileNotFoundError:
+                    pass
+            os.fsync(parent)
+            guide_dir.rmdir()
+    receipt_path.unlink()
 
 
 def main():
+    # Serialize prepare, refresh and downgrade across one-off Compose runs.
+    # Lock the existing station directory without leaving a file in shared data.
+    if sys.argv[1:] == ["initialize"]:
+        return run()
+    with opened_directory(DATA.parent) as fd:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return run()
+
+
+def run():
     project = os.environ["GIFTLEDGER_PROJECT"]
     url = site_url(project_host(project))
-    if sys.argv[1:] == ["refresh-guide"]:
-        identity = json.loads((DATA / "root_config/site/control/identity.json").read_bytes())
-        if identity.get("project") != project or (DATA / ADDRESS).read_text().strip() != url + "/":
+    if sys.argv[1:] in (["refresh-guide"], ["rollback-public-files"]):
+        identity = read_identity(project)
+        instance = identity["instance_id"]
+        if read_regular(public_path(project, instance, ADDRESS), 1024).decode().strip() != url + "/":
             raise SiteError("该维护说明的项目或网址与已安装的站点不符")
+        if sys.argv[1:] == ["rollback-public-files"]:
+            check_directory()
+            rollback_public(project, url, identity)
+            print("已恢复本站旧版公开文件名，可以按回退指南切换 YAML。")
+            return 0
         publish_guide(project, url, identity, refresh=True)
-        print(f"项目 {project} 的 data/{owner_guide.FILENAME} 已更新。")
+        print(f"项目 {project} 的 data/{owner_guide.public_name(project, instance, owner_guide.FILENAME)} 已更新。")
         return 0
     if sys.argv[1:] == ["prepare"]:
         from prepare_volumes import prepare_volumes
@@ -231,7 +385,7 @@ def main():
                 "mysql_socket": Path("/work/mysql"),
             },
         )
-        identity = json.loads((DATA / "root_config/site/control/identity.json").read_bytes())
+        identity = read_identity(project)
         if os.environ.get("GIFTLEDGER_OWNER_MAINTENANCE_GUIDE") == "1":
             if identity.get("project") != project:
                 raise SiteError("本站维护挂载的项目与站点身份不符")
@@ -240,11 +394,12 @@ def main():
             from cryptography import x509
             from cryptography.hazmat.primitives.serialization import Encoding
             root = x509.load_pem_x509_certificate((DATA / "tls_config/ca-chain.pem").read_bytes())
-            publish_public(ROOT_CERTIFICATE, root.public_bytes(Encoding.DER))
+            publish_public(identity, ROOT_CERTIFICATE, root.public_bytes(Encoding.DER))
             print(f"本站根证书 SHA-256：{identity['tls']['root_sha256']}", flush=True)
         else:
-            publish_public(LEGACY_CERTIFICATE, (DATA / "tls_config/fullchain.pem").read_bytes())
-        publish_public(ADDRESS, (url + "/\n").encode())
+            publish_file(DATA / LEGACY_CERTIFICATE, (DATA / "tls_config/fullchain.pem").read_bytes(),
+                         16384, 0o644, DATA / "root_config/maintenance")
+        publish_public(identity, ADDRESS, (url + "/\n").encode())
         publish_guide(project, url, identity)
         print(f"往来有礼网站地址：{url}/", flush=True)
         return 0

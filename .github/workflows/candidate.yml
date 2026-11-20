@@ -55,6 +55,15 @@ jobs:
         run: /usr/bin/python3 -m pytest -q -p no:cacheprovider validation/release
       - name: Build all five Linux/amd64 images
         run: python3 deploy/publication/images.py build "$RUNNER_TEMP/candidate" --commit "$GITHUB_SHA"
+      - name: Verify key recovery and rotation with the candidate's age binaries
+        run: |
+          docker run --rm --pull=never --network none --read-only --user 0:0 \
+            --cap-drop=ALL --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+            --mount "type=bind,source=$PWD,target=/src,readonly" --workdir /src \
+            --env PYTHONDONTWRITEBYTECODE=1 --entrypoint /opt/venv/bin/python3.12 \
+            giftledger-ci/backup:candidate -m unittest discover -v \
+            -s validation/release -p test_key_lifecycle.py
       - name: Backend regression tests against the candidate
         run: |
           docker run --rm --network none -v "$PWD/backend/tests:/app/backend/tests:ro" -e PYTHONPATH=/app/backend --entrypoint /opt/venv/bin/python3.12 giftledger-ci/api:candidate -m pytest -q -p no:cacheprovider /app/backend/tests

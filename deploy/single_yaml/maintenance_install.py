@@ -11,6 +11,7 @@ import re
 import resource
 import secrets
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -26,6 +27,7 @@ BASE = Path("/root/.giftledger-maintenance")
 PYTHON = "/usr/bin/python3"
 SYSTEMCTL = "/usr/bin/systemctl"
 ARCHIVE = "maintenance-install.pyz"
+KEY_ACTIONS = ("recover-key", "prepare-key-change", "finish-key-change", "cancel-key-change")
 MEMBERS = ("maintenance_host.py", "ubuntu_certificate_timer.py", "owner_login_code.py", "dsm-backup.pyz")
 MAX_BYTES = 8 * 1024**2
 RESULT_FILES = {"backup": "result.json", "enrollment": "enrollment.json", "restore": "web-restore.json"}
@@ -217,6 +219,125 @@ def bootstrap_mounts(record):
             os.fsync(fd)
 
 
+def verified_bytes(path, mode):
+    fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(fd)
+        need(stat.S_ISREG(info.st_mode) and (info.st_uid, info.st_gid, info.st_nlink) == (0, 0, 1)
+             and stat.S_IMODE(info.st_mode) == mode and info.st_size <= MAX_BYTES, "untrusted_existing_site_tool")
+        return stream.read(MAX_BYTES + 1)
+
+
+def replace_owned(path, before, after, mode):
+    actual = verified_bytes(path, mode)
+    need(actual in (before, after), "modified_existing_site_tool")
+    if actual != after:
+        host.atomic_file(path, after, mode)
+
+
+def upgrade_installed(root, previous, record, data, members):
+    """Resume a same-instance update from the root-owned original release archive."""
+    pinned = ("project", "instance", "origin", "station", "station_inode", "platform")
+    need(all(previous[k] == record[k] for k in pinned), "existing_site_or_version_differs")
+    state = root / "state"
+    binding = host.read_config(state)
+    need(binding["project"] == record["project"] and binding["instance"] == record["instance"]
+         and binding["station"] == record["station"] and binding["station_inode"] == record["station_inode"]
+         and binding["archive"] == str(root / "dsm-backup.pyz") and binding.get("platform", "dsm") == record["platform"]
+         and binding["sha256"] in (previous["archive_sha256"], record["archive_sha256"]), "existing_worker_binding_differs")
+    token = previous["installer_sha256"]
+    need(host.SHA.fullmatch(token), "previous_installer_digest_invalid")
+    folder = root / ("previous-" + token)
+    managed_dir(folder)
+    saved = folder / ARCHIVE
+    if not saved.exists():
+        original = verified_bytes(root / ARCHIVE, 0o400)
+        need(hashlib.sha256(original).hexdigest() == token, "previous_installer_digest_mismatch")
+        same_file(saved, original, 0o400)
+    original, older = read_package(saved)
+    need(hashlib.sha256(original).hexdigest() == token
+         and hashlib.sha256(older["dsm-backup.pyz"]).hexdigest() == previous["archive_sha256"],
+         "previous_installer_digest_mismatch")
+    same_file(folder/"installation.json", host.encoded(previous), 0o400)
+    plan = folder / "update-target.json"
+    same_file(plan, host.encoded(record), 0o400)
+    station = Path(record["station"])
+    station_state = station / ".giftledger-backup-state"
+    def private_engine_dir(fd):
+        st = os.fstat(fd)
+        need((st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode)) == (0, 0, 0o700)
+             and not any("acl" in item.lower() for item in os.listxattr(fd)), "untrusted_engine_state")
+    with owner.directory(station_state) as engine:
+        private_engine_dir(engine)
+    def idle():
+        stable = {"idle", "succeeded", "failed", "cancelled", "expired"}
+        need(all(r.get("state") in stable for r in outcomes(root).values()), "finish_site_tasks_before_upgrade")
+        for name, final in (("certificate.json", {"completed", "rolled-back"}),
+                            ("restore.json", {"completed", "rejected", "preflight"})):
+            p = station_state / name
+            need(not p.exists() or json.loads(verified_bytes(p,0o600))["stage"] in final, "finish_site_tasks_before_upgrade")
+        runs = station_state / "runs"
+        for p in runs.iterdir() if runs.exists() else ():
+            need(host.HEX_ID.fullmatch(p.name), "foreign_site_run")
+            row = json.loads(verified_bytes(p / "run.json", 0o600))
+            need(row["stage"] in ("finished","preflight-failed") and not row.get("private_cleanup_pending"),
+                 "finish_site_tasks_before_upgrade")
+        change = station_state / "key-change.json"
+        if change.exists():
+            row = json.loads(verified_bytes(change, 0o600))
+            need((row["project"], row["instance"]) == (record["project"], record["instance"]), "foreign_site_run")
+            if row["stage"] == "testing":
+                trial = row.get("trial", row["operation"])
+                need(host.HEX_ID.fullmatch(trial), "foreign_site_run")
+                trial_file = runs / trial / "run.json"
+                if trial_file.exists():
+                    failed = json.loads(verified_bytes(trial_file, 0o600))
+                    need((failed["project"], failed["instance_id"], failed["session_id"]) ==
+                         (record["project"], record["instance"], trial) and failed["stage"] == "preflight-failed"
+                         and not failed.get("worker_id") and not failed.get("bundle_id"),
+                         "finish_site_tasks_before_upgrade")
+            else:
+                need(row["stage"] in ("prepared", "completed", "cancelled"), "finish_site_tasks_before_upgrade")
+    idle()
+    for name, expected in {ARCHIVE:original, **older}.items():
+        need(verified_bytes(root/name,0o400) in (expected, (data if name == ARCHIVE else members[name])),
+             "modified_existing_site_tool")
+    # TERM requests graceful shutdown after the active operation. Avoid signalling a
+    # worker by name, or using an unverified administrator-customized service command.
+    pids = worker_pids(worker_args(root, previous))
+    need(len(pids) <= 1, "multiple_site_workers")
+    if pids:
+        need(worker_pids(worker_args(root, previous)) == pids, "site_worker_changed")
+        os.kill(pids[0], signal.SIGTERM)
+        end = time.monotonic() + 30
+        while worker_pids(worker_args(root, previous)):
+            need(time.monotonic() < end, "site_worker_still_finishing")
+            time.sleep(.2)
+    with owner.directory(station_state) as engine, contextlib.ExitStack() as stack:
+        private_engine_dir(engine)
+        fd = os.open("coordinator.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=engine)
+        engine_lock = stack.enter_context(os.fdopen(fd, "r+b"))
+        st = os.fstat(fd)
+        need(stat.S_ISREG(st.st_mode) and st.st_uid == 0 and st.st_nlink == 1
+             and not st.st_mode & 0o022, "untrusted_engine_lock")
+        worker_lock = stack.enter_context((state / "worker.lock").open("rb"))
+        fcntl.flock(worker_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(engine_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        idle()
+        for name, new_content in members.items():
+            replace_owned(root/name, older[name], new_content, 0o400)
+        replace_owned(root/ARCHIVE, original, data, 0o400)
+        binding["sha256"] = record["archive_sha256"]
+        host.atomic_file(state / "binding.json", host.encoded(binding), 0o600)
+        if record["platform"] == "ubuntu":
+            # These two exact release units pin the image. Preserve all other units and reject custom edits.
+            current = unit_files(root, record)
+            for name, expected in current.items():
+                old = expected.replace(record["image"].encode("ascii"), previous["image"].encode("ascii"))
+                replace_owned(UNIT_DIR/name, old, expected, 0o644)
+        host.atomic_file(root/"installation.json", host.encoded(record), 0o600)
+
+
 def install(root, args, package):
     data, members = read_package(package)
     record = discover(args.project, args.instance, args.origin, host.absolute(args.station), data)
@@ -224,7 +345,9 @@ def install(root, args, package):
     record["archive_sha256"] = digest
     first = root / "installation.json"
     if first.exists():
-        need(read_record(root) == record, "existing_site_or_version_differs")
+        previous = read_record(root)
+        if previous != record:
+            upgrade_installed(root, previous, record, data, members)
     else:
         need(set(os.listdir(root)) == {"install.lock"}, "host_install_directory_in_use")
         host.atomic_file(first, host.encoded(record), 0o600)
@@ -278,7 +401,7 @@ def service(project):
     return "giftledger-maintenance-" + project + ".service"
 
 
-def units(root, record):
+def unit_files(root, record):
     state, image, p = root / "state", record["image"], record["project"]
     worker = command([PYTHON, "-I", root / WORKER, "systemd-unit", "--state", state, "--key-image", image])
     cert = "giftledger-certificate-" + p
@@ -286,6 +409,13 @@ def units(root, record):
     files = {service(p): worker}
     for kind in ("service", "timer"):
         files[cert+"."+kind] = command([PYTHON, "-I", timer, kind+"-unit", "--state", state, "--key-image", image])
+    return files
+
+
+def units(root, record):
+    p = record["project"]
+    cert = "giftledger-certificate-" + p
+    files = unit_files(root, record)
     host.trusted_chain(UNIT_DIR)
     for name, data in files.items():
         same_file(UNIT_DIR / name, data, 0o644)
@@ -446,6 +576,10 @@ def run(args):
             if record["platform"] == "dsm":
                 print("请在 DSM 任务计划保存一个由 root 在开机时触发的任务。任务脚本为")
                 print(site_command(root, "start"))
+        elif args.action in KEY_ACTIONS:
+            host.archive_module({"archive": str(root / "dsm-backup.pyz"), "sha256": record["archive_sha256"]})
+            import key_lifecycle
+            key_lifecycle.run(sys.modules[__name__], root, record, args.action)
         elif args.action == "start":
             start(root, record)
             print("本站维护服务已开始监听。")
@@ -462,7 +596,7 @@ def run(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="安装本站宿主维护服务、查询离线回单或收尾原任务")
     commands = parser.add_subparsers(dest="action", required=True)
-    for action in ("install", "status", "login-code", "start", "review-backup", "review-enrollment", "review-restore"):
+    for action in ("install", "status", "login-code", "start", "review-backup", "review-enrollment", "review-restore", *KEY_ACTIONS):
         sub=commands.add_parser(action)
         sub.add_argument("--project", required=True)
         if action=="install":
@@ -475,5 +609,17 @@ def main(argv=None):
         return run(args)
     except Exception as exc:
         code = str(exc) if isinstance(exc, owner.RecoveryError) else host.machine_code(exc,"host_install_environment_invalid")
-        print("本站维护操作未完成。请核对本站资料和离线状态。 " + code, file=sys.stderr)
+        help_text = {
+            "operator_cancelled": "已退出本站管理员操作。",
+            "interactive_server_administrator_required": "请在本站服务器交互式管理员终端运行这条命令。",
+            "a_matching_backup_is_required": "请先做一份本站常规备份，再从维护页开始补领。",
+            "matching_published_site_backup_required": "本站找不到该编号的已核验备份。可先运行常规备份，再用新编号补领。",
+            "recovery_private_key_or_backup_failed_verification": "用登记钥匙核验该备份失败。请选与当前登记钥匙匹配的本站备份，或先做一次常规备份。",
+            "saved_key_confirmation_mismatch": "确认码与本站这次换钥不符。请在原维护页重新选中刚保存的钥匙，使用本次确认码。",
+            "prepare_key_change_first": "请先在本站准备换钥并保存新钥匙。",
+            "key_change_backup_not_verified": "首份新备份尚未通过核验。请核对本站备份和服务状态，再在本次操作上继续或取消。",
+            "rotation_requires_completion": "此次换钥已进入备份或提交阶段。请用完成换钥命令核对并继续同一次操作。",
+            "container_manager_identity_outdated": "已在换钥前停止。群晖 Container Manager 登记的本站 Web 或 API 容器编号已过期，原钥匙仍然有效。请保留已保存的新钥匙和确认码。服务器管理员可按《站主升级》核对并重新登记本项目受影响的 Web 或 API 容器，确认服务正常，再用原确认码继续完成本次换钥。",
+        }
+        print(help_text.get(code, "本站维护操作未完成。请核对本站资料和离线状态。") + " (" + code + ")", file=sys.stderr)
         return 1

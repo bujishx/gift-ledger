@@ -209,8 +209,8 @@ class OwnerGuideTests(unittest.TestCase):
                 windows, mac = section.split("\n\nMac\n", 1)
                 self.assertIn("windows-site-tools.zip", windows)
                 self.assertIn("GiftLedger.cmd", windows)
-                for phrase in ("mac-site-tools.zip", "mac_backup_key.py", "Mac 终端", "登记旧钥匙",
-                               "生成新钥匙并登记", "本站备份钥匙登记通过"):
+                for phrase in ("mac-site-tools.zip", "mac_backup_key.py", "Mac 终端", "上传旧钥匙登记",
+                               "生成新钥匙登记", "本站备份钥匙登记通过"):
                     self.assertIn(phrase, mac)
                 self.assertIn("python3 mac_backup_key.py ", mac)
                 self.assertNotIn("查看本站目录", mac)

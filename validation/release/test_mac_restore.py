@@ -296,8 +296,8 @@ class MacEnrollmentTests(unittest.TestCase):
                                         (["1", "我的 新钥匙.agekey"], self.home / "我的 新钥匙.agekey", True)):
             with self.subTest(choices=choices):
                 prompts = self.invoke(choices)
-                self.assertIn("1 生成新钥匙并登记", prompts[0].splitlines())
-                self.assertIn("2 登记旧钥匙", prompts[0].splitlines())
+                self.assertIn("1 生成新钥匙登记", prompts[0].splitlines())
+                self.assertIn("2 上传旧钥匙登记", prompts[0].splitlines())
                 self.custody.assert_called_with(path, generate, self.age.return_value)
                 self.assertEqual(self.exchange.call_args.args[2:], (b"original", "recipient", self.age.return_value))
 

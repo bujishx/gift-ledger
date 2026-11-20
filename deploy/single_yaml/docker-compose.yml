@@ -1,4 +1,5 @@
 # 往来有礼 · 单文件安装候选版 · Linux/amd64
+# 建站前先查看同一发行页的《安装前检查端口与网络》（Install-network.zh.txt）。
 # 新建站点时填写
 # 同一台主机再建独立站时，请另取项目名、另选空闲 HTTPS 端口、另建专用空文件夹。局域网 IP 可以相同。
 # 文件夹名可自取。例如在群晖 File Station 建 docker/gift-ledger-family，把本文件放进去。
@@ -14,7 +15,7 @@ x-site-ip: &site-ip "${GIFTLEDGER_SITE_IP:-192.168.1.20}"
 x-site-port: &site-port "${GIFTLEDGER_HTTPS_PORT:-8443}"
 
 # 以下为程序配置，常规安装请保留原值
-# 网址、公开根证书和本站维护说明会写入 data/。备份、恢复及证书续签按 data/本站维护说明.txt 操作。
+# 站点资料在 data/ 中，以项目名和实例短号开头。备份、恢复与证书操作见“本站维护说明”，离线指南见 data/站主指南/。
 x-site: &site
   GIFTLEDGER_SITE_IP: *site-ip
   GIFTLEDGER_HTTPS_PORT: *site-port
@@ -25,6 +26,7 @@ x-site: &site
 x-app: &app
   <<: *site
   GIFT_LEDGER_ENVIRONMENT: production
+  GIFTLEDGER_BUILD_VERSION: "开发版"
   GIFT_LEDGER_LOG_LEVEL: INFO
   GIFT_LEDGER_REGISTRATION_ENABLED: "true"
   GIFT_LEDGER_AUTH_COOKIE_SECURE: "true"
@@ -119,6 +121,7 @@ services:
       - "/var/run/docker.sock:/var/run/docker.sock"
       - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-backup-state:/work/backup-state"
       - "${GIFTLEDGER_SITE_DIR:-.}/restore-input:/work/restore-input:ro"
+      - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-site-info:/work/site-info"
   restore-key:
     <<: *installer
     image: giftledger-candidate/backup:1.5.0-stage5-r1
@@ -218,6 +221,7 @@ services:
       - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-maintenance:/run/giftledger-maintenance:ro"
       - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-maintenance/requests:/run/giftledger-maintenance/requests:rw"
       - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-owner:/run/giftledger-owner:rw"
+      - "${GIFTLEDGER_SITE_DIR:-.}/.giftledger-site-info:/run/giftledger-site-info:ro"
     networks: [private]
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=128m

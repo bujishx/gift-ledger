@@ -1,3 +1,5 @@
+import * as lifecycle from "./key-lifecycle.js";
+lifecycle.bind();
 import {KeyError, loadAge, makePacket, readIdentity, verifyReceipt, verifyTarget} from "./age-transfer.js";
 
 const panel = document.querySelector("#key-enrollment");
@@ -30,6 +32,7 @@ function clear() {
 export function setOwner(session) {
   clear();
   owner = session;
+  lifecycle.setOwner(session);
   panel.hidden = !session;
   if (session) showLastResult(session, generation);
 }
@@ -41,7 +44,7 @@ async function showLastResult(session, version) {
     const previous = await response.json();
     if (version !== generation || previous.project !== session.project) return;
     if (previous.state === "succeeded") {
-      feedback.textContent = "服务器已保存本站的登记记录。要核对手中的原钥匙，请选择“登记旧钥匙”。";
+      feedback.textContent = "服务器已保存本站的登记记录。要核对手中的原钥匙，请选择“上传旧钥匙登记”。";
     } else if (["queued", "awaiting_packet", "verifying"].includes(previous.state)) {
       feedback.textContent = "本站有一个登记任务正在进行。可回原标签页继续。若原页已关闭，请等待任务结束后再登记。";
     } else if (previous.state === "needs_review") {

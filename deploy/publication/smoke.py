@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import ssl
 import subprocess
@@ -228,7 +229,18 @@ def smoke(yaml, pull):
             verify_backup_age(cmd, env)
             compose("up", "-d")
             url = "https://127.0.0.1:16443"
-            ca = station / "data/本站根证书.cer"
+            # The CI user can read the published DER, but the prepare-owned
+            # private identity directory must remain inaccessible.
+            data = station / "data"
+            if (ROOT / "deploy/single_yaml/station_guides.py").is_file():
+                roots = [p for p in data.glob(name + "-????????-本站根证书.cer")
+                         if re.fullmatch(re.escape(name) + r"-[a-f0-9]{8}-本站根证书\.cer", p.name)
+                         and p.is_file() and not p.is_symlink()]
+                if len(roots) != 1:
+                    raise RuntimeError("Expected one public root certificate for this project")
+                ca, = roots
+            else:
+                ca = data / "本站根证书.cer"
             wait_ready(cmd, env, url, ca)
             enroll(cmd, env, work)
             wait_ready(cmd, env, url, ca)

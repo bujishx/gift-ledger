@@ -7,9 +7,33 @@
   <link rel="icon" type="image/x-icon" href="/favicon.ico">
   <link rel="stylesheet" href="/maintenance-ui.css">
   <link rel="stylesheet" href="/api/v1/maintenance/page.css">
+  <script defer src="/api/v1/maintenance/console.js"></script>
   <script defer src="/api/v1/maintenance/page.js"></script>
 </head>
-<body>
+<body class="owner-page">
+  <svg class="owner-icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol viewBox="0 0 24 24" id="icon-overview"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol viewBox="0 0 24 24" id="icon-users"><circle cx="9" cy="7" r="3.5"/><path d="M2 20v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2m0-16a4 4 0 0 1 0 7m5 9v-2a5 5 0 0 0-3.5-4.7"/></symbol>
+    <symbol viewBox="0 0 24 24" id="icon-tools"><path d="M21 7a6 6 0 0 1-8 5.7l-6.7 7a2 2 0 0 1-3-3l7-6.7a6 6 0 0 1 8-7L14 7l3 3 4-4z"/></symbol>
+    <symbol viewBox="0 0 24 24" id="icon-info"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.2"/></symbol>
+    <symbol viewBox="0 0 24 24" id="icon-sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.4 1.4m11.2 11.2L19 19m0-14-1.4 1.4M6.4 17.6 5 19"/></symbol>
+    <symbol viewBox="0 0 24 24" id="icon-moon"><path d="M20.6 15a9 9 0 0 1-11.6-11.6A9 9 0 1 0 20.6 15z"/></symbol>
+  </svg>
+  <header class="owner-top"><span class="owner-top-brand"><img src="/brand-mark.png" alt=""><strong>往来有礼</strong><span>站点维护</span></span>
+    <button id="appearance" class="outline owner-icon-button" aria-label="切换主题" type="button"><svg aria-hidden="true"><use href="#icon-sun"/></svg></button>
+  </header>
+  <aside id="owner-nav" hidden>
+    <div class="brand owner-brand"><img class="brand-mark-image" src="/brand-mark.png" alt=""><strong>往来有礼</strong></div>
+    <nav aria-label="站点维护导航">
+      <button type="button" data-view="overview"><svg aria-hidden="true"><use href="#icon-overview"/></svg><span>站点总览</span></button>
+      <button type="button" data-view="users"><svg aria-hidden="true"><use href="#icon-users"/></svg><span>注册用户</span></button>
+      <button type="button" data-view="tools"><svg aria-hidden="true"><use href="#icon-tools"/></svg><span>维护操作</span></button>
+      <button type="button" data-view="about"><svg aria-hidden="true"><use href="#icon-info"/></svg><span>关于本站</span></button>
+    </nav>
+    <a href="/" class="cross-site-link owner-back" target="_blank" rel="noopener" aria-label="在新标签打开记账网站">
+      <span class="owner-back-label"><span>在新标签</span><span>打开记账网站</span></span><svg aria-hidden="true"><use href="/maintenance/link-icons.svg#new-tab"/></svg>
+    </a>
+  </aside>
   <main class="auth-shell auth-page maintenance-page">
     <section class="auth-card card" aria-labelledby="maintenance-title">
       <header class="auth-head">
@@ -31,7 +55,7 @@
             <label class="field-label" for="owner-credential" id="credential-label">本站短时码</label>
             <input id="owner-credential" type="password" required maxlength="128" autocomplete="off"
                    autocapitalize="none" spellcheck="false" aria-describedby="login-help">
-            <small id="login-help" class="auth-field-help">请在服务器上打开本站的 data/本站维护说明.txt，按说明取得短时码。</small>
+            <small id="login-help" class="auth-field-help">请打开服务器项目 data 中的“本站维护说明.txt”，按说明取得本站短时码。新版文件名带有项目名和实例短号。</small>
           </div>
           <button class="primary full" type="submit">登录站点维护</button>
         </form>
@@ -39,6 +63,7 @@
           <strong id="owner-project"></strong>
           <button class="text-button" id="owner-logout" type="button">退出站主登录</button>
         </div>
+        <div id="signed-out-security"></div>
         <details id="owner-security">
           <summary>设置、找回或关闭站主密码</summary>
           <form id="owner-password" class="form-stack" autocomplete="off">
@@ -67,12 +92,26 @@
       </div>
       <output id="owner-feedback" class="auth-hint" aria-live="polite"></output>
       <button class="outline full" type="button" id="retry-access" hidden>重新读取登录方式</button>
+      <div id="owner-overview" class="owner-panel" hidden>
+        <div class="owner-heading"><div><h1>站点总览</h1><p id="overview-identity"></p></div>
+          <button id="refresh-overview" type="button" class="outline">刷新状态</button></div>
+        <output id="overview-note" aria-live="polite"></output>
+        <section class="owner-grid" aria-label="本站运行情况">
+          <article class="card"><h2>服务状态</h2><dl id="overview-services"></dl></article>
+          <article class="card"><h2>最近一次备份</h2><dl id="overview-backup"></dl><button class="text-button" type="button" data-jump="backup">查看备份操作</button></article>
+          <article class="card"><h2>证书与存储</h2><dl id="overview-resources"></dl></article>
+          <article class="card"><h2>本站使用情况</h2><dl id="overview-counts" class="owner-counts"></dl><button class="text-button" type="button" data-jump="users">查看注册用户</button></article>
+        </section>
+      </div>
+      <div id="owner-tools" class="owner-panel">
+        <div class="owner-heading" id="tools-heading" hidden><div><h1>维护操作</h1><p>管理本站备份钥匙、备份与恢复，以及站主登录方式。</p></div></div>
+        <div class="owner-tool-grid">
       <section id="key-enrollment" class="maintenance-section" hidden aria-labelledby="key-title">
         <h2 id="key-title">首次备份前登记钥匙</h2>
         <p>从零建账的站和用旧备份恢复的新站都可以选。今后要恢复本站的备份，需要保管好这把原钥匙。</p>
         <div class="maintenance-actions" id="key-choices">
-          <button class="outline" type="button" id="key-old">登记旧钥匙</button>
-          <button class="outline" type="button" id="key-new">生成新钥匙并登记</button>
+          <button class="outline" type="button" id="key-old">上传旧钥匙登记</button>
+          <button class="outline" type="button" id="key-new">生成新钥匙登记</button>
         </div>
         <div id="key-selection" class="form-stack" hidden>
           <a class="text-button" id="key-download" hidden>下载新钥匙</a>
@@ -89,6 +128,29 @@
         <output id="key-feedback" class="auth-hint" aria-live="polite"></output>
         <button class="outline full" type="button" id="key-retry" hidden>继续核对登记结果</button>
       </section>
+      <details id="lifecycle-panel" class="maintenance-section" hidden>
+        <summary>管理已登记的备份钥匙</summary>
+        <p>需要本站服务器管理员授权。旧备份继续使用制作时对应的钥匙。</p>
+        <div class="maintenance-actions">
+          <button class="outline" type="button" id="lifecycle-recover">补领本站备份钥匙</button>
+          <button class="outline" type="button" id="lifecycle-prepare">更换今后备份的钥匙</button>
+        </div>
+        <div class="form-stack" id="lifecycle-exchange" hidden>
+          <pre id="lifecycle-command"></pre>
+          <label class="field">本页一次性接收码<input id="lifecycle-receive" readonly></label>
+          <label class="field">管理员返回的加密回执<textarea id="lifecycle-sealed" rows="3" maxlength="16384" autocomplete="off" spellcheck="false"></textarea></label>
+          <button class="outline" type="button" id="lifecycle-open">打开加密回执</button>
+        </div>
+        <a class="text-button" id="lifecycle-download" hidden>保存备份私钥文件</a>
+        <div class="form-stack" id="lifecycle-verify" hidden>
+          <label class="field">重新打开本次保存的钥匙<input type="file" id="lifecycle-key"></label>
+          <label class="field" id="lifecycle-choose-backup" hidden>从指定备份中选择 .age 密文<input type="file" id="lifecycle-backup" accept=".age"></label>
+          <button class="primary" type="button" id="lifecycle-confirm">验证已保存的钥匙</button>
+        </div>
+        <output id="lifecycle-note" class="auth-hint" aria-live="polite"></output>
+        <button class="text-button" type="button" id="lifecycle-clear">清除本页临时资料</button>
+      </details>
+      <section class="owner-backup" id="backup-actions"><h2 id="backup-heading" hidden>手动备份</h2>
       <form id="maintenance" class="form-stack" autocomplete="off" hidden>
         <div id="legacy-owner-field" class="field">
           <label for="token" class="field-label">本站维护授权码<span class="auth-req" aria-hidden="true">*</span></label>
@@ -103,6 +165,7 @@
       </form>
       <output id="result" class="auth-hint" aria-live="polite"></output>
       <button id="download-backup" type="button" class="outline" hidden>下载已核验的备份 ZIP</button>
+      </section>
       <section id="site-restore" class="maintenance-section" hidden aria-labelledby="restore-title">
         <h2 id="restore-title">用旧备份恢复到本站</h2>
         <p>请在独立建立的空白站操作。先选择旧站的备份和当时对应的原钥匙，预检通过后再确认恢复。</p>
@@ -128,6 +191,21 @@
           <button id="restore-cancel" class="outline" type="button" hidden>取消本次恢复</button>
         </div>
       </section>
+      <div id="signed-in-security" class="owner-security-card" hidden></div>
+      <section id="account-shortcut" hidden><h2>协助找回业务账号</h2><p>只忘记登录名时可查找账号。重置业务密码前请核实本人。</p>
+        <div class="maintenance-actions"><button type="button" class="outline" data-jump="lookup">查看登录名</button><button type="button" class="outline" data-jump="reset">重置业务密码</button></div></section>
+      <section id="certificate-help" hidden><h2>证书与续签</h2><p>站点总览显示网站证书到期时间。手动续签和设置自动续签的管理员命令在本站维护说明中。</p><p id="site-guide-name"></p>
+        <button type="button" class="outline" data-jump="overview">查看证书有效期</button></section>
+        </div>
+      </div>
+      <div id="owner-users" class="owner-panel" hidden>
+        <div class="owner-heading"><div><h1>注册用户</h1><p>查看本站业务账号的使用情况，协助找回登录名或重置密码。</p></div></div>
+        <section class="card owner-user-card">
+          <div class="owner-table-head"><h2>业务账号</h2><label class="field"><span class="sr-only">搜索登录名或姓名</span><input type="search" id="usage-search" placeholder="搜索登录名或姓名"></label></div>
+          <output id="users-note" aria-live="polite"></output>
+          <table class="owner-table"><thead><tr><th>登录名</th><th>本人姓名</th><th>联系人</th><th>事件</th><th>记账</th><th>最近登录</th></tr></thead><tbody id="usage-rows"></tbody></table>
+          <div id="usage-cards"></div><button class="outline" type="button" id="more-users" hidden>加载更多</button>
+        </section>
       <section id="account-help" hidden aria-labelledby="account-help-title">
         <h2 id="account-help-title">协助找回业务账号</h2>
         <p class="muted">先核实是账号本人。只忘了登录名时，把查到的登录名单独告诉本人即可。</p>
@@ -161,10 +239,19 @@
           </div>
         </form>
       </section>
+      </div>
       <div class="auth-switch">
-        <a href="/" class="text-button">返回记账网站</a>
+        <a href="/" class="cross-site-link" target="_blank" rel="noopener">在新标签打开记账网站<svg aria-hidden="true"><use href="/maintenance/link-icons.svg#new-tab"/></svg></a>
       </div>
     </section>
   </main>
+  <dialog id="owner-about" aria-labelledby="about-title">
+    <header><h2 id="about-title">关于本站</h2><button id="about-x" class="owner-close" type="button" aria-label="关闭关于本站">×</button></header>
+    <div class="owner-about-body site-about-content" id="owner-about-content"></div>
+    <footer>
+      <a href="/" class="cross-site-link" target="_blank" rel="noopener">在新标签打开记账网站<svg aria-hidden="true"><use href="/maintenance/link-icons.svg#new-tab"/></svg></a>
+      <button type="button" id="about-close" class="outline">关闭</button>
+    </footer>
+  </dialog>
 </body>
 </html>

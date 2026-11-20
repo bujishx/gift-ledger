@@ -2,6 +2,7 @@ import hashlib
 import json
 import secrets
 from concurrent.futures import ThreadPoolExecutor
+from html.parser import HTMLParser
 from uuid import uuid4
 
 import pytest
@@ -66,6 +67,47 @@ def test_login_surfaces_and_static_assets(site):
     assert denied.status_code == 403
     assert client.get(BASE + "/status?token=unused").status_code == 400
     assert client.get(BASE + "/status", headers=headers).json()["state"] == "idle"
+
+
+def test_owner_navigation_preserves_the_maintenance_controls(site):
+    class Controls(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.ids = []
+            self.views = set()
+            self.business_links = []
+            self.new_tab_icons = 0
+
+        def handle_starttag(self, tag, attrs):
+            attributes = dict(attrs)
+            if identifier := attributes.get("id"):
+                self.ids.append(identifier)
+            if tag == "button" and "data-view" in attributes:
+                self.views.add(attributes["data-view"])
+            if tag == "a" and "cross-site-link" in attributes.get("class", "").split():
+                self.business_links.append(attributes)
+            if tag == "use" and attributes.get("href") == "/maintenance/link-icons.svg#new-tab":
+                self.new_tab_icons += 1
+
+    client, _, _ = site
+    controls = Controls()
+    controls.feed(client.get(BASE + "/page").text)
+    assert len(set(controls.ids)) == len(controls.ids)
+    assert controls.views == {"overview", "users", "tools", "about"}
+    assert len(controls.business_links) == controls.new_tab_icons == 3
+    for link in controls.business_links:
+        assert (link["href"], link["target"], link["rel"]) == ("/", "_blank", "noopener")
+    assert {
+        "owner-login", "owner-security", "owner-logout", "retry-access",
+        "key-old", "key-new", "key-cancel", "key-confirm", "key-retry",
+        "lifecycle-recover", "lifecycle-prepare", "lifecycle-confirm", "lifecycle-clear",
+        "maintenance", "result", "download-backup", "token", "restore-start", "restore-confirm",
+        "restore-status", "restore-cancel", "lookup-users", "choose-reset", "reset-account",
+        "account-select", "confirm-account", "cancel-reset", "certificate-help",
+        "appearance", "owner-about", "owner-about-content", "about-close",
+    } <= set(controls.ids)
+    script = client.get(BASE + "/console.js")
+    assert script.status_code == 200 and "javascript" in script.headers["content-type"]
 
 
 def test_origin_and_input_are_checked_before_queuing(site):

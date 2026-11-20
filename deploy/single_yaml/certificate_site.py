@@ -15,6 +15,7 @@ import backup_ops as ops
 import backup_site as site
 from certificate_policy import LEAF_DAYS, renewal_start
 import certificate_auto
+import owner_guide
 
 SCRIPT = "/opt/gift-ledger-install/certificate_site.py"
 PYTHON = "/opt/venv/bin/python3.12"
@@ -145,11 +146,22 @@ class Job:
                             record.get("old_leaf", "-"), record.get("root", "-")], mounts, "none",
                            self.project + "-certificate-" + record["operation"], write)
 
-    def verify_live(self, web, root, leaf):
+    def verify_live(self, web, root, leaf, instance):
         require(self.web(web)["running"], "certificate_web_state_unconfirmed")
-        proof = self.helper(["probe", os.environ["GIFTLEDGER_SITE_IP"], os.environ["GIFTLEDGER_HTTPS_PORT"], root, leaf],
-                            {ROOT_FILE: (self.station / "data/本站根证书.cer", False)},
-                            "host")
+        # Mount only the one public DER, even when running on a remote Docker
+        # host whose station directory cannot be inspected by this coordinator.
+        name = owner_guide.public_name(self.project, instance, owner_guide.ROOT_CERTIFICATE)
+        args = ["probe", os.environ["GIFTLEDGER_SITE_IP"], os.environ["GIFTLEDGER_HTTPS_PORT"], root, leaf]
+        def probe_file(filename):
+            return self.helper(args, {ROOT_FILE: (self.station / "data" / filename, False)}, "host")
+        try:
+            proof = probe_file(name)
+        except ops.BackupOpsError as exc:
+            if exc.code != "docker_command_failed":
+                raise
+            # A v1.7 station without the new prepare has only the original name.
+            # Both paths have to prove the same pinned root and served leaf.
+            proof = probe_file(owner_guide.ROOT_CERTIFICATE)
         require(proof == {"certificate_sha256": leaf, "root_sha256": root}, "certificate_live_proof_invalid")
 
     def running(self, expected, want):
@@ -234,7 +246,7 @@ def coordinate(job, action, journal):
     if record["stage"] == "activating":
         try:
             job.running(web, True)
-            job.verify_live(web, record["root"], record["result"]["certificate_sha256"])
+            job.verify_live(web, record["root"], record["result"]["certificate_sha256"], record["instance_id"])
             require(job.web(web)["running"], "certificate_web_state_unconfirmed")
         except Exception as exc:
             save("rolling-back", failure=error_code(exc))

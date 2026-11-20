@@ -8,9 +8,10 @@ from pathlib import Path
 import re
 import subprocess
 
-from images import has_windows_tools
+from images import NETWORK_ASSET, has_network_guide, has_windows_tools
 
 EXPECTED = {
+    NETWORK_ASSET,
     "docker-compose.yml",
     "mac-site-tools.zip",
     "windows-site-tools.zip",
@@ -89,6 +90,8 @@ def deliver(service, version, commit, folder):
         raise ValueError("Invalid release identity")
     files = {p.name: p for p in folder.iterdir() if p.is_file() and not p.is_symlink()}
     expected = EXPECTED if has_windows_tools() else EXPECTED - {"windows-site-tools.zip"}
+    if not has_network_guide():
+        expected = expected - {NETWORK_ASSET}
     if set(files) != expected or len(list(folder.iterdir())) != len(expected):
         raise ValueError("Unexpected release assets")
     base = f"https://github.com/{service.repository}/releases/download/{version}/"

@@ -32,15 +32,21 @@ def check(host, url, root_sha):
     data = host.station / "data"
     state, _ = host.directories()
     expected_url = single_yaml_site.site_url(ip) + "/"
-    actual_url = io.read_regular(ops.no_links(data / "网站地址.txt"), 1024).decode().strip()
+    identity = ops.read_json(ops.no_links(data / "root_config/site/control/identity.json"))
+    ops.require(identity["project"] == host.project, "certificate_identity_changed")
+
+    def published(name):
+        path = data / single_yaml_site.owner_guide.public_name(host.project, identity["instance_id"], name)
+        return ops.no_links(path if os.path.lexists(path) else data / name)
+
+    actual_url = io.read_regular(published(single_yaml_site.ADDRESS), 1024).decode().strip()
     ops.require(url == expected_url == actual_url, "certificate_site_port_mismatch")
-    root = io.read_regular(ops.no_links(data / "本站根证书.cer"), 16384)
+    root = io.read_regular(published(single_yaml_site.ROOT_CERTIFICATE), 16384)
     ops.require(hashlib.sha256(root).hexdigest() == root_sha, "certificate_public_root_changed")
     journal = state / "certificate.json"
     if os.path.lexists(journal) and ops.read_json(journal)["stage"] not in certificate_site.TERMINAL:
         return NEEDS_COORDINATOR
 
-    identity = ops.read_json(data / "root_config/site/control/identity.json")
     tls = identity["tls"]
     ops.require(identity["project"] == host.project and tls.get("profile") == "site-ca-v1"
                 and tls["host"] == ip and tls["root_sha256"] == root_sha, "certificate_identity_changed")

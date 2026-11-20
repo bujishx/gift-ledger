@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.errors import register_error_handlers
+from app.api.routes import site_about
 from app.api.routes.admin_backups import router as admin_backups_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.contacts import router as contacts_router
@@ -62,10 +63,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "Owner sessions require absolute site maintenance and state directories"
             )
         application.state.maintenance_owner_dir = Path(owner_dir)
+        application.include_router(site_about.owner)
         application.include_router(maintenance_login_router)
         application.include_router(maintenance_accounts_router)
         application.include_router(maintenance_enrollment_router)
         application.include_router(maintenance_restore_router)
+    application.include_router(site_about.business, prefix="/api/v1")
     application.include_router(health_router, prefix="/api/v1")
     application.include_router(home_router, prefix="/api/v1")
     application.include_router(auth_router, prefix="/api/v1")

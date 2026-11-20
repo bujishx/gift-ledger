@@ -214,7 +214,7 @@ def request_site(args):
         choice = input("1 登记日常备份钥匙\n2 从备份恢复到独立空站\n请选择：").strip()
         keys.check(choice in ("1", "2"), "已退出。")
         args.action = "enroll" if choice == "1" else "restore"
-        print("请准备服务器的 SSH 登录信息。恢复时还需要目标站 data/网站地址.txt 里的完整网址。")
+        print("请准备服务器的 SSH 登录信息。恢复时还需要目标站 data 中“网站地址.txt”里的完整网址。新版文件名含项目名和实例短号。")
     if args.action == "restore" and not args.site_url and (menu or not any((args.host, args.project_dir, args.project))):
         while True:
             value = input("粘贴这个站的完整 HTTPS 网址（直接回车退出）：").strip()

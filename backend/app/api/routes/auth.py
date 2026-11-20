@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from app.api.dependencies import (
     CsrfProtectionDependency,
@@ -14,6 +14,7 @@ from app.api.dependencies import (
     sensitive_action_api_error,
 )
 from app.api.errors import ApiError, ErrorResponse
+from app.api.maintenance_access import owner_sessions
 from app.api.security import clear_auth_cookies, set_auth_cookies
 from app.core.security import (
     PasswordPolicyError,
@@ -41,6 +42,7 @@ from app.services.auth import (
     register_user,
 )
 from app.services.import_preview_store import ImportPreviewStore, ImportPreviewStoreError
+from app.services.maintenance_sessions import SessionStoreError
 from app.services.personal_safety_backup_store import (
     PersonalSafetyBackupStore,
     PersonalSafetyBackupStoreError,
@@ -124,6 +126,7 @@ def register(
 )
 def login(
     payload: CredentialsRequest,
+    request: Request,
     response: Response,
     settings: SettingsDependency,
     session: DatabaseSessionDependency,
@@ -146,8 +149,14 @@ def login(
             "登录功能尚未完成安全配置",
         ) from exc
 
+    account = _account_response(user, get_self_name(session, user.id))
     set_auth_cookies(response, access_token, settings)
-    return _account_response(user, get_self_name(session, user.id))
+    if hasattr(request.app.state, "maintenance_owner_dir"):
+        try:
+            owner_sessions(request).record_business_login(user.id, user.username)
+        except (HTTPException, SessionStoreError):
+            audit_log.warning("maintenance_login_activity_unavailable")
+    return account
 
 
 @router.post(

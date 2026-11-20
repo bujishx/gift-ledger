@@ -1363,6 +1363,8 @@ def run(
     moment = now or utcnow()
     require(moment.tzinfo is not None, "aware_time_required")
     with host_lock(state):
+        if site_bindings is not None and hasattr(site_bindings, "check_key_binding"):
+            site_bindings.check_key_binding(profile, session_id if mode == "recover" else new_session_id)
         assert_no_schema_update_hold(profile)
         runs = mkdir(state / "runs")
         history = run_records(state)
@@ -1552,7 +1554,6 @@ def run(
             )
             record["private_cleanup_counts"] = finished.get("private_cleanup_counts", {})
             record["resources_at_finish"] = finished.get("resources", record["resources"])
-            save_run(journal_path, record, "finished")
             if manifest is not None:
                 retire_exchange(run_dir, manifest)
             save_json(
@@ -1575,8 +1576,14 @@ def run(
                     "outcome": record["outcome"],
                 },
             )
+            # Consumers may rely on both files after seeing 'finished'. Publish the receipt
+            # first so a power loss before that point leaves the same session resumable.
+            save_run(journal_path, record, "finished")
             try:
-                record["retention"] = apply_safe_retention(profile)
+                # The first backup with a staged key must leave historical, old-key artifacts in place.
+                record["retention"] = ({"success": True, "status": "key_change_preserved_history"}
+                                       if site_bindings is not None and profile.get("key_change_session") == session_id
+                                       else apply_safe_retention(profile))
                 save_json(journal_path, record)
             except (OSError, ValueError, BackupOpsError, backup_store.BackupStoreError):
                 record["retention"] = {

@@ -178,6 +178,11 @@ def maintenance_script():
     )
 
 
+@router.get("/console.js")
+def maintenance_console():
+    return FileResponse(RESOURCES / "owner_console.js", media_type="text/javascript", headers=HEADERS)
+
+
 @router.get("/page.css")
 def maintenance_style():
     return FileResponse(RESOURCES / "site_maintenance.css", media_type="text/css", headers=HEADERS)

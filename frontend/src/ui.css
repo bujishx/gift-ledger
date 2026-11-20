@@ -1,6 +1,11 @@
 /* Shared contract for all pages. WorkBuddy page styles must use these tokens. */
 :root { --ui-primary:#0b54c5; --ui-primary-soft:#eaf2ff; --ui-text:#1c2737; --ui-muted:#647184; --ui-border:#dfe7ef; --ui-surface:#fff; --ui-background:#f6f8fc; --ui-expense:#c8392b; --ui-income:#3e8e5a; --ui-radius:16px; }
 .ui-icon { width:22px; height:22px; flex:none; vertical-align:middle; }
+a.cross-site-link { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:44px; color:var(--ui-primary); font-size:14px; font-weight:600; text-decoration:none; }
+a.cross-site-link:hover { text-decoration:underline; text-underline-offset:4px; }
+a.cross-site-link:focus-visible { border-radius:4px; }
+a.cross-site-link > svg { width:15px; height:15px; flex:none; }
+.site-about-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .nav-icon { width:22px; height:22px; }
 .nav-label { font-size:16px; }
 .nav-item { min-height:48px; }

@@ -86,7 +86,7 @@ function show(data) {
   const lines = [notes[data.state]];
   if (data.state === "succeeded") {
     lines.push("已恢复 " + data.result.gift_count + " 笔，金额合计 " + data.result.cash_amount_all_gift_records + " 元。");
-    lines.push("登录本站核对原账。今后从本站备份，可选择登记旧钥匙或生成新钥匙并登记。");
+    lines.push("登录本站核对原账。今后从本站备份，可选择“上传旧钥匙登记”或“生成新钥匙登记”。");
     clearFiles();
   }
   if (["failed","needs_review"].includes(data.state) && data.code) lines.push("原因 " + data.code);

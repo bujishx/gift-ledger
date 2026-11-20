@@ -3,16 +3,30 @@
 // Only the business site's display preference is shared; maintenance credentials stay in this tab.
 const themeKey = "gift-ledger-display-theme";
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
-function applySiteTheme() {
-  let mode;
-  try { mode = window.localStorage.getItem(themeKey); } catch { /* Use system appearance. */ }
-  const theme = ["light", "dark"].includes(mode) ? mode : (systemTheme.matches ? "dark" : "light");
-  document.documentElement.dataset.theme = theme;
+const appearance = document.querySelector("#appearance");
+let displayMode;
+function readSiteTheme() {
+  try { return window.localStorage.getItem(themeKey); } catch { return "system"; }
 }
+function applySiteTheme() {
+  const system = systemTheme.matches ? "dark" : "light";
+  const theme = ["light","dark"].includes(displayMode) ? displayMode : system;
+  document.documentElement.dataset.theme = theme;
+  appearance.querySelector("use").setAttribute("href",theme === "light" ? "#icon-sun" : "#icon-moon");
+  const label = theme === "light" ? "当前浅色，切换为深色" : "当前深色，切换为浅色";
+  appearance.setAttribute("aria-label",label); appearance.title = label;
+}
+displayMode = readSiteTheme();
 applySiteTheme();
+appearance.addEventListener("click",()=>{
+  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  displayMode = next === (systemTheme.matches ? "dark" : "light") ? "system" : next;
+  try { window.localStorage.setItem(themeKey,displayMode); } catch { /* Available for this tab. */ }
+  applySiteTheme();
+});
 systemTheme.addEventListener("change", applySiteTheme);
-window.addEventListener("storage", (event) => {
-  if (event.key === themeKey || event.key === null) applySiteTheme();
+window.addEventListener("storage",event=>{
+  if (event.key === themeKey || event.key === null) { displayMode=readSiteTheme(); applySiteTheme(); }
 });
 
 const form = document.querySelector("#maintenance");
@@ -139,11 +153,11 @@ async function showRestore(token, project) {
   }
 }
 
-async function showKeyEnrollment(token, project) {
+async function showKeyEnrollment(token, project, instance) {
   try {
     keyEnrollment = await import("/maintenance/key-enrollment.js");
     if (accountSession === token) keyEnrollment.setOwner({
-      project,
+      project, instance,
       request: (path, body) => ownerRequest(token, path, body),
       expired: expiredOwnerSession,
     });
@@ -186,6 +200,7 @@ function ownerRequest(token, path, body, signal) {
 async function setMaintenanceOwnerSession(token) {
   clearDownload();
   accountSession = null;
+  ownerConsole.setOwner(null);
   keyEnrollment?.setOwner(null);
   restoreView?.setOwner(null);
   document.querySelector("#site-restore").hidden = true;
@@ -202,7 +217,8 @@ async function setMaintenanceOwnerSession(token) {
     if (view !== accountView || data.authenticated !== true || data.role !== "site_owner" ||
         typeof data.project !== "string" || !data.project) return false;
     accountSession = token;
-    showKeyEnrollment(token, data.project);
+    ownerConsole.setOwner({token,project:data.project,instance:data.instance});
+    showKeyEnrollment(token, data.project, data.instance);
     showRestore(token, data.project);
     accountHelp.hidden = false;
     ownerProject.textContent = "本站 " + data.project;
@@ -381,7 +397,7 @@ function updateLoginMethod() {
   const code = ownerMethod.value === "code";
   document.querySelector("#credential-label").textContent = code ? "本站短时码" : "站主密码";
   document.querySelector("#login-help").textContent = code
-    ? "请在服务器上打开本站的 data/本站维护说明.txt，按说明取得短时码。"
+    ? "请打开服务器项目 data 中的“本站维护说明.txt”，按说明取得短时码。新版文件名以本站项目名和实例短号开头。"
     : "输入为本站设置的站主密码。忘记密码时，可用服务器新签发的短时码重新设置。";
 }
 
@@ -491,6 +507,7 @@ window.addEventListener("pagehide", () => {
   ownerFeedback.textContent = "";
   setMaintenanceOwnerSession(null);
 });
+const ownerConsole = createOwnerConsole({request:ownerRequest, expired:expiredOwnerSession});
 loadAccessMethods();
 
 downloadBackup.addEventListener("click", async () => {

@@ -288,7 +288,12 @@ class Tests(unittest.TestCase):
                 if "image: " in line
             },
         )
+        released = (a / "docker-compose.yml").read_text()
+        self.assertIn('GIFTLEDGER_BUILD_VERSION: "1.5.0"', released)
+        self.assertNotIn("GIFT_LEDGER_APP_VERSION:", released)
+        self.assertEqual((a / images.NETWORK_ASSET).read_bytes(), images.selected_file(images.NETWORK_SOURCE))
         for path in (a / "Install.zh.md", a / "Install.en.md"):
+            self.assertIn("/v1.5.0/" + images.NETWORK_ASSET, path.read_text())
             self.assertIn(
                 "/releases/download/v1.5.0/docker-compose.yml", path.read_text()
             )
@@ -340,13 +345,17 @@ class Tests(unittest.TestCase):
                 self.assertNotIn("native_age.py", z.namelist())
 
     def test_old_reviewed_candidate_retries_four_asset_format(self):
-        with mock.patch.object(images, "has_windows_tools", return_value=False):
+        with mock.patch.object(images, "has_windows_tools", return_value=False), mock.patch.object(
+            images, "has_network_guide", return_value=False
+        ):
             folder = self.bundle()
         api = FakeGitHub()
-        with mock.patch.object(github_release, "has_windows_tools", return_value=False):
+        with mock.patch.object(github_release, "has_windows_tools", return_value=False), mock.patch.object(
+            github_release, "has_network_guide", return_value=False
+        ):
             github_release.deliver(api, "v1.5.0", self.commit, folder)
             github_release.deliver(api, "v1.5.0", self.commit, folder)
-        self.assertEqual(set(api.uploads), github_release.EXPECTED - {"windows-site-tools.zip"})
+        self.assertEqual(set(api.uploads), github_release.EXPECTED - {"windows-site-tools.zip", images.NETWORK_ASSET})
 
     def test_interrupted_draft_retries_without_overwriting_assets(self):
         path = self.bundle()

@@ -5,6 +5,7 @@ boundary. Target, executable digest and authoritative progress stay with root.
 """
 import argparse
 import contextlib
+from datetime import datetime, timezone
 import fcntl
 from functools import partial
 import hashlib
@@ -15,7 +16,9 @@ import re
 import secrets
 import shlex
 import signal
+import ssl
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -115,11 +118,15 @@ def check_archive(path, expected):
 
 
 @contextlib.contextmanager
-def directories(path):
+def directories(path, parent=None):
     """Open each component without following links, including mutable DSM share ancestors."""
-    fd = os.open("/", os.O_RDONLY | DIR)
+    if parent is None:
+        fd, parts = os.open("/", os.O_RDONLY | DIR), path.parts[1:]
+    else:
+        require(not path.is_absolute() and ".." not in path.parts, "invalid_station_subdirectory")
+        fd, parts = os.dup(parent), path.parts
     try:
-        for part in path.parts[1:]:
+        for part in parts:
             child = os.open(part, os.O_RDONLY | DIR, dir_fd=fd)
             os.close(fd)
             fd = child
@@ -291,8 +298,19 @@ def result(config, operation, state, code, **extra):
 def save(state, handles, value):
     # Commit host truth first, so a crash before or after the public rename can
     # be repaired without replaying the operation.
-    atomic_file(state / "result.json", encoded(value), 0o600)
-    publish(handles["status"], "result.json", encoded(value))
+    raw = encoded(value)
+    private = state / "result.json"
+    changed = not private.exists() or private.read_bytes() != raw
+    if changed:
+        atomic_file(private, raw, 0o600)
+        if value["state"] in ("succeeded", "failed", "needs_review"):
+            try:
+                publish(handles["status"], "backup-observation.json", encoded({
+                    "project": value["project"], "operation_id": value["operation_id"], "state": value["state"],
+                    "observed_at": datetime.now(timezone.utc).isoformat(timespec="microseconds")}))
+            except OSError:
+                pass  # The ordinary result below remains authoritative if the optional observation fails.
+    publish(handles["status"], "result.json", raw)
 
 
 def receipt(config, bundle, previous_bundle, archive, engine_session=None):
@@ -575,6 +593,102 @@ def retire_marker(directory, operation):
         os.fsync(directory)
 
 
+def owner_snapshot(cfg):
+    """Collect public facts from the named site's host volumes without exposing their contents."""
+    with directories(Path(cfg["station"])) as root:
+        require(identity(os.fstat(root)) == cfg["station_inode"], "station_identity_changed")
+        return sample_owner_site(cfg, root)
+
+
+def sample_owner_site(cfg, root):
+    sampled = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    data = {"format": "giftledger-owner-overview-v1", "project": cfg["project"],
+            "instance": cfg["instance"], "sampled_at": sampled}
+    def owned_file(folder, name, limit):
+        with directories(Path(folder), root) as parent:
+            fd = os.open(name, os.O_RDONLY | NO_LINK | os.O_NONBLOCK, dir_fd=parent)
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(fd)
+                require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1
+                        and not info.st_mode & 0o022 and info.st_size <= limit, "snapshot_source_mismatch")
+                return stream.read(limit + 1)
+
+    def time_field(value):
+        if isinstance(value, str) and len(value) <= 40:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+        return None
+
+    for key, folder in (("ledger_free_bytes", "data/mysql_data"), ("backup_free_bytes", "backups")):
+        try:
+            with directories(Path(folder), root) as fd:
+                usage = os.fstatvfs(fd)
+                data[key] = usage.f_bavail * usage.f_frsize
+        except OSError:
+            pass
+    try:
+        control = json.loads(owned_file("data/root_config/site/control", "identity.json", 65536))
+        require((control["project"], control["instance_id"]) == (cfg["project"], cfg["instance"]), "foreign_site")
+        chain = owned_file("data/tls_config", "fullchain.pem", 65536).decode("ascii")
+        leaf, end, _ = chain.partition("-----END CERTIFICATE-----")
+        digest = hashlib.sha256(ssl.PEM_cert_to_DER_cert(leaf + end)).hexdigest()
+        if digest == control["tls"]["certificate_sha256"]:
+            data["certificate_expires_at"] = time_field(control["tls"]["not_after"])
+    except (HostError, KeyError, OSError, TypeError, ValueError):
+        pass
+    state = ".giftledger-backup-state"
+    try:
+        with directories(Path(state), root) as fd:
+            meta = os.fstat(fd)
+            require(meta.st_uid == 0 and stat.S_IMODE(meta.st_mode) == 0o700, "untrusted_engine")
+        try:
+            last = json.loads(owned_file(state, "last-result.json", 65536))
+        except FileNotFoundError:
+            data["backup_state"] = "idle"
+        else:
+            session = last["session_id"]
+            require(isinstance(session, str) and HEX_ID.fullmatch(session), "invalid_engine_session")
+            run = json.loads(owned_file(state + "/runs/" + session, "run.json", 131072))
+            require((run["project"], run["instance_id"], run["session_id"]) == (cfg["project"], cfg["instance"], session),
+                    "foreign_site_backup")
+            if last.get("success") is True:
+                bid = last["bundle_id"]
+                require((last["project"], last["instance_id"]) == (cfg["project"], cfg["instance"]) and
+                        isinstance(bid, str) and HEX_ID.fullmatch(bid) and run["bundle_id"] == run["backup_id"] == bid and
+                        run["stage"] == "finished" and last["services_restored"] is True and
+                        last["local_verified"] is True and last["private_cleanup_pending"] is False, "unverified_backup")
+                data.update(backup_state="succeeded", backup_id=bid, decryption_verified=True,
+                            backup_checked_at=time_field(last.get("completed_at")))
+            elif last.get("success") is False:
+                data.update(backup_state="needs_review" if last.get("needs_recovery") else "failed",
+                            backup_checked_at=time_field(last.get("at") or last.get("completed_at")))
+                if last.get("local_verified") is False:
+                    data["decryption_verified"] = False
+    except (HostError, KeyError, OSError, TypeError, ValueError):
+        pass
+    try:
+        binary = ("/var/packages/ContainerManager/target/usr/bin/docker"
+                  if cfg.get("platform", "dsm") == "dsm" else str(ubuntu_docker()))
+        project = cfg["project"]
+        template = ('{{.Name}} {{index .Config.Labels "com.docker.compose.project"}} '
+                    '{{index .Config.Labels "com.docker.compose.service"}} {{.State.Status}} '
+                    '{{if .State.Health}}{{.State.Health.Status}}{{end}}')
+        name = project + "-web-1"
+        run = subprocess.run([binary, "--host", "unix:///var/run/docker.sock", "inspect", "--type", "container",
+                              "--format", template, name], stdin=subprocess.DEVNULL, capture_output=True,
+                             timeout=2, env={"PATH": "/usr/bin:/bin", "HOME": "/root", "LC_ALL": "C"})
+        values = run.stdout.decode("ascii").split()
+        if run.returncode == 0 and len(values) >= 4 and values[:3] == ["/" + name, project, "web"]:
+            if values[3] != "running" or values[4:] == ["unhealthy"]:
+                data["web_status"] = "unavailable"
+            elif values[4:] == ["healthy"]:
+                data["web_status"] = "ok"
+    except (HostError, OSError, subprocess.TimeoutExpired, UnicodeError):
+        pass
+    return data
+
+
 def serve(state, wait, once, expected_station=None, key_enrollment=False, key_image=None, web_restore=False,
           *, persistent=False, stopping=None):
     cfg = read_config(state)
@@ -610,7 +724,14 @@ def serve(state, wait, once, expected_station=None, key_enrollment=False, key_im
                 require(str(restore.__file__).startswith(cfg["archive"] + "/"), "unexpected_restore_queue_module")
                 recovery = restore.current(host, state, handles, cfg)
             deadline = time.monotonic() + wait
+            next_sample = 0.0
             while (persistent or time.monotonic() < deadline) and not (stopping and stopping.is_set()):
+                if persistent and key_enrollment and time.monotonic() >= next_sample:
+                    try:
+                        publish(handles["status"], "overview.json", encoded(owner_snapshot(cfg)))
+                    except (HostError, OSError, ValueError, TypeError, KeyError, OverflowError):
+                        pass
+                    next_sample = time.monotonic() + 120
                 if web_restore:
                     if recovery["public"]["state"] == "needs_review":
                         return review_exit
@@ -644,6 +765,7 @@ def serve(state, wait, once, expected_station=None, key_enrollment=False, key_im
                     retire_marker(handles["requests"], operation)
                     continue
                 latest = consume(state, cfg, handles, operation, expected_station, key_image)
+                next_sample = 0.0
                 if latest["state"] == "needs_review":
                     return review_exit
                 retire_marker(handles["requests"], operation)

@@ -15,6 +15,9 @@ RUN /opt/venv/bin/python -m pip install --no-cache-dir -r /tmp/requirements.lock
 COPY --chown=10001:0 backend/ /app/backend/
 COPY --chown=10001:0 deploy/api_entrypoint.py /app/deploy/api_entrypoint.py
 
+ARG GIFTLEDGER_BUILD_COMMIT
+ARG GIFTLEDGER_BUILD_DATE
+ENV GIFTLEDGER_BUILD_COMMIT=${GIFTLEDGER_BUILD_COMMIT} GIFTLEDGER_BUILD_DATE=${GIFTLEDGER_BUILD_DATE}
 USER 10001:0
 EXPOSE 8000
 ENTRYPOINT ["python3.12", "/app/deploy/api_entrypoint.py"]

@@ -32,13 +32,20 @@ export function createThemeController({ window: win, document: doc, onApply = ()
   else media.addListener(systemChanged);
   win.addEventListener('storage', storageChanged);
   apply();
+  function setMode(value) {
+    if (!THEME_MODES.includes(value)) return false;
+    mode = value;
+    try { win.localStorage.setItem(THEME_STORAGE_KEY, mode); } catch { /* Preference still works for this page. */ }
+    apply();
+    return true;
+  }
   return {
-    setMode(value) {
-      if (!THEME_MODES.includes(value)) return false;
-      mode = value;
-      try { win.localStorage.setItem(THEME_STORAGE_KEY, mode); } catch { /* Preference still works for this page. */ }
-      apply();
-      return true;
+    setMode,
+    toggle() {
+      const system = media.matches ? 'dark' : 'light';
+      const current = mode === 'system' ? system : mode;
+      const next = current === 'dark' ? 'light' : 'dark';
+      setMode(next === system ? 'system' : next);
     },
     destroy() {
       if (media.removeEventListener) media.removeEventListener('change', systemChanged);
@@ -63,5 +70,5 @@ export function setThemeMode(mode) {
 
 export function useTheme() {
   initializeTheme();
-  return { themeMode, effectiveTheme, setThemeMode };
+  return { themeMode, effectiveTheme, setThemeMode, toggleTheme: () => controller?.toggle() };
 }

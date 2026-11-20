@@ -2,13 +2,16 @@ import hashlib
 import json
 import secrets
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_authentication_session, get_database_session
@@ -114,6 +117,7 @@ def site(monkeypatch, tmp_path):
         conn.exec_driver_sql(
             "CREATE TABLE gift_records (id INTEGER PRIMARY KEY, user_id INTEGER, amount NUMERIC)"
         )
+        conn.exec_driver_sql("CREATE TABLE event_records(id INTEGER PRIMARY KEY, user_id INTEGER)")
     try:
         yield Site(
             root,
@@ -167,6 +171,7 @@ def test_empty_target_and_restarted_api_accept_own_verified_session(site):
             "authenticated": True,
             "role": "site_owner",
             "project": site.project,
+            "instance": json.loads((site.root / "owner-site.json").read_bytes())["instance_id"],
         }
         assert before.get(BASE + "/accounts", headers=headers(token)).json() == {"accounts": []}
     operation = uuid4().hex
@@ -182,10 +187,149 @@ def test_empty_target_and_restarted_api_accept_own_verified_session(site):
         ).read_bytes() == operation.encode() + b"\n"
 
 
+def test_overview_usage_and_last_successful_login_do_not_expose_ledger_or_other_sites(site):
+    site.seed()
+    token = site.verified()
+    status = site.root / "status/overview.json"
+    now = datetime.now(UTC)
+    bid = uuid4().hex
+    sample = dict(
+        format="giftledger-owner-overview-v1",
+        project=site.project,
+        instance=site.store.binding[1],
+        sampled_at=now.isoformat(),
+        web_status="ok",
+        backup_state="succeeded",
+        backup_id=bid,
+        decryption_verified=True,
+        backup_checked_at=now.isoformat(),
+        ledger_free_bytes=4321000,
+        backup_free_bytes=1234000,
+        private_note="fixture-private-note",
+        certificate_expires_at=(now + timedelta(days=57, hours=1)).isoformat(),
+    )
+    status.write_text(json.dumps(sample))
+    with site.db.begin() as sql:
+        sql.exec_driver_sql(
+            "INSERT INTO relationship_types VALUES(1,NULL,'relationship.self'),(2,NULL,'other')"
+        )
+        sql.exec_driver_sql(
+            "INSERT INTO contacts VALUES('本人样稿',1,1),('不得返回',1,2),('其他',2,2)"
+        )
+        sql.exec_driver_sql("INSERT INTO event_records VALUES(1,1),(2,1),(3,2)")
+        sql.exec_driver_sql("INSERT INTO gift_records VALUES(1,1,51.82),(2,2,208)")
+    with site.client() as c:
+        owner = headers(token)
+        for endpoint in ("overview", "usage/0"):
+            assert c.get(f"{BASE}/{endpoint}", headers=headers(site.legacy)).status_code == 403
+        result = c.get(BASE + "/overview", headers=owner)
+        assert result.status_code == 200 and result.headers["cache-control"] == "no-store"
+        data = result.json()
+        assert data["totals"] == dict(users=3, contacts=3, events=3, entries=2)
+        assert data["database"]["version"] and data["database"]["schema_revision"] is None
+        assert data["service"] == dict(web="ok", api="ok", database="ok")
+        assert data["certificate"]["remaining_days"] == 57 and data["backup"]["backup_id"] == bid
+        assert (
+            data["storage"]["backup_free_bytes"] == 1234000
+            and "fixture-private-note" not in result.text
+        )
+        assert login(c, "ledger_user", "wrong").status_code == 401
+        before = c.get(BASE + "/usage/0", headers=owner).json()
+        assert all(user["last_login_at"] is None for user in before["users"])
+        assert before["users"][0] == dict(
+            username="ledger_user",
+            display_name="本人样稿",
+            is_active=True,
+            contacts=2,
+            events=2,
+            entries=1,
+            last_login_at=None,
+        )
+        assert login(c, "ledger_user", site.old_password).status_code == 200
+        for endpoint in ("overview", "usage/0"):
+            assert c.get(f"{BASE}/{endpoint}").status_code == 401
+        seen = c.get(BASE + "/usage/0", headers=owner)
+        assert (
+            "不得返回" not in seen.text and "51.82" not in seen.text and "password" not in seen.text
+        )
+        assert datetime.fromisoformat(seen.json()["users"][0]["last_login_at"]).tzinfo
+        assert seen.json()["users"][1]["last_login_at"] is None
+        assert len(c.get(BASE + "/usage/2", headers=owner).json()["users"]) == 1
+        for replacement in (
+            dict(sample, instance=str(uuid4())),
+            dict(sample, sampled_at=(now - timedelta(minutes=6)).isoformat()),
+            dict(sample, sampled_at=(now + timedelta(days=1)).isoformat()),
+        ):
+            status.write_text(json.dumps(replacement))
+            stale = c.get(BASE + "/overview", headers=owner).json()
+            assert stale["backup"]["state"] == "unknown" and stale["service"]["web"] == "unknown"
+            assert (
+                stale["storage"]["backup_free_bytes"] is None and stale["totals"] == data["totals"]
+            )
+
+
 def test_stage_one_bearer_has_no_authority_once_owner_sessions_are_enabled(site):
     with site.client() as client:
         assert_no_maintenance_access(client, headers(site.legacy), site.root)
         assert client.get(BASE + "/session", headers=headers(site.verified())).status_code == 200
+
+
+def test_overview_retains_host_results_when_database_is_down_and_reports_newer_web_failure(site):
+    owner = headers(site.verified())
+    now = datetime.now(UTC)
+    previous = now - timedelta(seconds=30)
+    status = site.root / "status"
+    (status / "overview.json").write_text(
+        json.dumps(
+            {
+                "format": "giftledger-owner-overview-v1",
+                "project": site.project,
+                "instance": site.store.binding[1],
+                "sampled_at": now.isoformat(),
+                "backup_state": "succeeded",
+                "backup_id": uuid4().hex,
+                "decryption_verified": True,
+                "backup_checked_at": previous.isoformat(),
+                "web_status": "ok",
+                "backup_free_bytes": 560_000_000,
+            }
+        )
+    )
+    op = uuid4().hex
+    task = dict(project=site.project, operation_id=op, state="failed")
+    (status / "backup-observation.json").write_text(
+        json.dumps(dict(task, observed_at=now.isoformat()))
+    )
+    (status / "result.json").write_text(
+        json.dumps(dict(task, format="giftledger-maintenance-status-v1"))
+    )
+    with (
+        site.client() as c,
+        patch.object(Session, "scalar", side_effect=OperationalError("SELECT 1", (), None)),
+    ):
+        data = c.get(BASE + "/overview", headers=owner).json()
+        assert data["service"] == {"web": "ok", "api": "ok", "database": "unavailable"}
+        assert set(data["totals"].values()) == {None}
+        assert data["storage"]["backup_free_bytes"] == 560_000_000
+        assert data["backup"]["state"] == "failed" and data["backup"]["decryption_verified"] is None
+        (site.root / "requests/backup.request").write_text(uuid4().hex + "\n")
+        assert c.get(BASE + "/overview", headers=owner).json()["backup"]["state"] == "queued"
+
+
+def test_usage_cursor_covers_unique_accounts_without_loading_passwords_or_duplicate_counts(site):
+    site.seed()
+    with site.db.begin() as db:
+        db.exec_driver_sql(
+            "INSERT INTO users(id,username,is_active,password_hash,is_admin) "
+            "VALUES(?,?,1,'unused',0)",
+            [(i, f"user{i}") for i in range(4, 58)],
+        )
+    owner = headers(site.verified())
+    with site.client() as c:
+        first = c.get(BASE + "/usage/0", headers=owner).json()
+        second = c.get(BASE + "/usage/" + str(first["next_after"]), headers=owner).json()
+    assert len(first["users"]) == 50 and len(second["users"]) == 7 and second["next_after"] is None
+    assert len({row["username"] for row in first["users"] + second["users"]}) == 57
 
 
 @pytest.mark.parametrize("user", ["ledger_user", "ledger_admin"])

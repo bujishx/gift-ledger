@@ -11,11 +11,21 @@ from urllib.parse import urlsplit
 
 
 FILENAME = "本站维护说明.txt"
+ADDRESS = "网站地址.txt"
+ROOT_CERTIFICATE = "本站根证书.cer"
+GUIDES = "站主指南"
 DSM_DOCKER = "/var/packages/ContainerManager/target/usr/bin/docker"
 DSM_PYTHON = "/usr/bin/python3"
 FIND_PREPARE = dedent("""\
     id=$("$d" ps -aq --filter "label=com.docker.compose.project=$p" --filter label=com.docker.compose.service=prepare --filter label=com.docker.compose.oneoff=False)
     case "$id" in ''|*[!0-9a-f]*) echo "找不到本站唯一的 prepare 容器，请核对项目名。" >&2; exit 1;; esac""")
+
+
+def public_name(project, instance, filename):
+    if (not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", project)
+            or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", instance)):
+        raise ValueError("项目名或站点实例无效")
+    return f"{project}-{instance[:8]}-{filename}"
 
 
 def host_path(value):
@@ -85,6 +95,9 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
     station = station_path(directory, site_dir)
     config = host_path(config_file)
     instance = identity["instance_id"]
+    guide_name = public_name(project, instance, FILENAME)
+    cert_name = public_name(project, instance, ROOT_CERTIFICATE)
+    deletion_guide = public_name(project, instance, "如何彻底删除本站.txt")
     root_sha = identity["tls"].get("root_sha256")
     setup = host_setup(project, directory, station, config)
     # Compose may originally have received its paths, IP and port from shell
@@ -110,6 +123,8 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
 {fingerprint}
 
 服务器维护命令在群晖的 root 任务计划、root SSH 终端或 Ubuntu 上有 Docker 权限的终端执行。Mac 和 Windows 的登记、恢复命令请在对应的站主工具目录执行。多行命令请连同括号一起复制。"""]
+    paragraphs.append(f"站主指南\n安装前检查端口与网络    data/{GUIDES}/安装前检查端口与网络.txt\n"
+                      f"如何彻底删除本站    data/{GUIDES}/{deletion_guide}")
     if owner_login:
         installed = quote(f"/root/.giftledger-maintenance/{project}/maintenance-install.pyz")
         paragraphs.append("启用本站网页维护（每站一次）\n在服务器终端执行 sudo -i，复制下面整段。它从本站 prepare 容器取出同版程序，"
@@ -120,12 +135,12 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
                           f"/usr/bin/python3 -I {installed} start --project {quote(project)}")
         paragraphs.append(
             f"站点维护网页    {url.rstrip('/')}/maintenance\n"
-            "从下方领取本站登录码，或用已设置的站主密码登录。登录后核对页面显示的项目名。\n"
-            "页面出现“首次备份前登记钥匙”时，从零建账的站和用旧备份恢复的新站都可以选择“登记旧钥匙”或"
-            "“生成新钥匙并登记”。新钥匙先下载保存，再选中保存的文件，点“确认登记到本站”。\n"
+            "从下方领取本站登录码，或用已设置的站主密码登录。登录后在“站点总览”核对项目名和实例短号。打开“维护操作”使用钥匙、备份和恢复入口。\n"
+            "页面出现“首次备份前登记钥匙”时，从零建账的站和用旧备份恢复的新站都可以选择“上传旧钥匙登记”或"
+            "“生成新钥匙登记”。新钥匙先下载保存，再选中保存的文件，点“确认登记到本站”。\n"
             "看到“本站备份钥匙登记通过”后，点“开始备份”。等网站重新打开，点“查看备份结果”，"
             "再点“下载已核验的备份 ZIP”。请将 ZIP 和对应的原钥匙分别妥善保管。\n"
-            "想把旧备份恢复到独立空站时，打开目标空站的维护网页。选择旧站的备份和制作这份备份时用的原钥匙，"
+            "想把旧备份恢复到独立空站时，在目标空站的维护网页打开“维护操作”。选择旧站的备份和制作这份备份时用的原钥匙，"
             "点“上传并预检”。核对显示的源站、笔数、目标网址和项目后，输入“恢复”，点“确认恢复到本站”。"
             "稍后在同一页点“查看恢复进度”，再用原账号登录核账。"
         )
@@ -136,6 +151,15 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
         paragraphs.append("网页暂时打不开时查看本站维护任务\n备份或恢复时可稍后重新打开原网址。长时间未恢复，可在服务器管理员终端复制下面一行查看任务状态。"
                           "先记下原任务编号，如状态为 needs_review，请根据程序提供的救援命令核对这次任务。\n"
                           f"/usr/bin/python3 -I {installed} status --project {quote(project)}")
+        admin = f"/usr/bin/python3 -I {installed}"
+        project_arg = f" --project {quote(project)}"
+        paragraphs.append("本站备份钥匙补领与更换（群晖和 Ubuntu）\n"
+                          "在本站维护页打开“维护操作 → 管理已登记的备份钥匙”。由服务器管理员在本站交互终端 sudo -i 后按提示运行对应命令。\n"
+                          f"补领本站备份钥匙    {admin} recover-key{project_arg}\n"
+                          f"准备更换今后备份的钥匙    {admin} prepare-key-change{project_arg}\n"
+                          f"保存新钥匙后完成换钥    {admin} finish-key-change{project_arg}\n"
+                          f"取消尚未完成的换钥    {admin} cancel-key-change{project_arg}\n"
+                          "用备份结果核对实际解密核验成功。旧备份仍需使用制作时对应的原钥匙。")
     resolved = all((directory, station, config))
     get_dirs = 'printf "项目文件夹：%s\\nYAML：%s\\n站点文件夹：%s\\n" "$dir" "$cfg" "$station"'
     update = (compose + ' run --rm --no-deps -e GIFTLEDGER_PROJECT_DIR="$dir" '
@@ -166,7 +190,7 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
         return f'.\\GiftLedger.cmd {action} --project {project} --site-url {url} {layout}'
 
     enrollment_heading = "备用方式 · 用桌面工具登记钥匙" if owner_login else "第一次备份前登记钥匙"
-    enrollment = (f"{enrollment_heading}\n从零建账的新站和用旧备份恢复的新站都可以选择“登记旧钥匙”或“生成新钥匙并登记”。\n"
+    enrollment = (f"{enrollment_heading}\n从零建账的新站和用旧备份恢复的新站都可以选择“上传旧钥匙登记”或“生成新钥匙登记”。\n"
                   f"本次登记的项目是 {project}，网址是 {url}/。请按电脑系统下载与本站同一发行版本的站主工具。\n"
                   "Mac 和 Windows 都会优先使用电脑上与本站匹配的 age 和 age-keygen。首次提示缺少时，按回车下载，"
                   "核对后会继续本次操作。在这台电脑上可复用相同版本的加密工具。如要使用本机 Docker Desktop 备用，按提示输入 D。")
@@ -184,14 +208,14 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
         enrollment += "工具登录后会自动查找本站目录，并在登记前核对站点身份。"
     enrollment += "\n" + credentials + "\n" + mac_command("mac_backup_key.py")
 
-    enrollment += ("\n\n在登记工具中选择\n“登记旧钥匙”会让你选取自己保管的 age 私钥原文件，例如 identity.txt 或以 .agekey 结尾的文件。\n"
-                   "“生成新钥匙并登记”会让你选择新钥匙的保存位置，请保管好生成的 .agekey 原文件。\n"
-                   "如果新钥匙已生成但登记中断，再次打开登记工具，选择“登记旧钥匙”，选取刚才生成的文件即可继续。\n"
+    enrollment += ("\n\n在登记工具中选择\n“上传旧钥匙登记”会让你选取自己保管的 age 私钥原文件，例如 identity.txt 或以 .agekey 结尾的文件。\n"
+                   "“生成新钥匙登记”会让你选择新钥匙的保存位置，请保管好生成的 .agekey 原文件。\n"
+                   "如果新钥匙已生成但登记中断，再次打开登记工具，选择“上传旧钥匙登记”，选取刚才生成的文件即可继续。\n"
                    "看到“本站备份钥匙登记通过”后，就可以运行手动备份。")
     paragraphs.append(enrollment)
     if not resolved:
         paragraphs.append("查看本站目录\n需要查看服务器上的实际目录或生成含完整路径的恢复命令时，在服务器终端运行下面整段命令。"
-                          "它会更新站点文件夹里的 data/本站维护说明.txt。完成后打开更新后的文件。\n" + block(get_dirs + "\n" + update))
+                          f"它会更新站点文件夹里的 data/{guide_name}。完成后打开更新后的文件。\n" + block(get_dirs + "\n" + update))
     # Copy the DSM helper from the installed, read-only prepare image. A root
     # scheduled task must not execute a script replaceable on the user's share.
     copy_program = ('tmp=$(mktemp -d)\n'
@@ -209,11 +233,11 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
                             dsm_backup.replace('\n', '\n  ') + '\nelse\n  ' + compose + ' run --rm backup\nfi') +
                       "\n看到“已实际解密核验”后，将站点文件夹中 backups/artifacts/ 下本次编号对应的整份五文件备份复制到另一台设备。原钥匙另行保管。")
     if root_sha:
-        paragraphs.append("核对公开根证书\n从本站 data 文件夹下载“本站根证书.cer”。若 DSM 日志页为空，以下命令会从 Docker 日志读取指纹，再计算服务器上该证书的 SHA-256。"
+        paragraphs.append(f"核对公开根证书\n从本站 data 文件夹下载“{cert_name}”。若 DSM 日志页为空，以下命令会从 Docker 日志读取指纹，再计算服务器上该证书的 SHA-256。"
                           "Mac 可在终端输入 shasum -a 256 和一个空格，将刚下载的文件拖入终端再按回车；"
                           "这样同名下载带有“(1)”时也能选对文件。指纹一致后再信任证书。\n" +
                           block(compose + ' logs --no-color prepare | grep -F "本站根证书 SHA-256" || :\n'
-                                'sha256sum "$station/data/本站根证书.cer"'))
+                                f'sha256sum "$station/data/{cert_name}"'))
         paragraphs.append("查看证书有效期\n本段检查本站证书并显示到期信息。\n" +
                           block(compose + " run --rm --no-deps certificate inspect"))
         certificate_check = (run_program + " --check-certificate " + site_args +
@@ -251,7 +275,7 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
         paragraphs.append("证书维护\n本站公开文件是 data/本站公开证书.crt。此站沿用早期自签证书布局，"
                           "请按原版本的证书维护说明操作。")
     paragraphs.append("从本站备份恢复到另一站\n在独立的项目文件夹用独立项目名和其他 HTTPS 端口启动一个新站，保留空站状态。"
-                      "打开新站 data/本站维护说明.txt，在它的“恢复到本站”一节操作。")
+                      "打开目标站 data 里以其项目名、实例前八位开头的“本站维护说明.txt”，在它的“恢复到本站”一节操作。")
     recovery = (f"恢复到本站（目标 {project}，{url}/）\n仅在这里就是新建的空目标站时执行。"
                 "在 Windows 或 Mac 打开同版站主工具目录，准备源站的五文件备份或 ZIP 与匹配的原钥匙。")
     if resolved:
@@ -263,10 +287,14 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
     paragraphs.append(recovery + f"\n确认框应显示备份来源、目标网址 {url}/ 和本站实例 {instance}。"
                       "核对一致后确认。恢复完成，用原账号登录目标站，核对最后一笔账和收支合计。\n"
                       f"把用旧备份恢复的新站作为主力站后，首次备份前请看本文件的“{'站点维护网页' if owner_login else enrollment_heading}”。"
-                      "恢复时临时提供旧钥匙用于解密。如果本站还没登记日常备份钥匙，可选“登记旧钥匙”沿用这把钥匙，也可选“生成新钥匙并登记”。"
+                      "恢复时临时提供旧钥匙用于解密。如果本站还没登记日常备份钥匙，可选“上传旧钥匙登记”沿用这把钥匙，也可选“生成新钥匙登记”。"
                       "登记过一次，以后直接运行本文件的“手动备份”。每份备份都要保留与它匹配的 .agekey 原文件。")
     if resolved:
         paragraphs.append("重新核对项目路径\n如果项目移动过或 YAML 改过名字，先在宿主机运行本段重新读取当前路径，再打开本文件。\n"
                           + block(get_dirs + "\n" + update, discover=True))
+    paragraphs.append("回退到使用旧文件名的版本\n"
+                      "先按发行版《站主升级》核对回退条件并在站外保存备份。切换回旧 YAML 前，在新版程序仍可用时执行以下命令。"
+                      "它把本站公开资料恢复成旧版文件名，收起新版生成的站主指南。随后按回退指南重建。\n"
+                      + block(compose + " run --rm --no-deps -T prepare rollback-public-files"))
     return "\n\n".join(paragraphs) + "\n"
 

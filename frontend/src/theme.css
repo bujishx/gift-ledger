@@ -1,18 +1,10 @@
-/* The approved light palette is inherited unchanged. Only the theme chooser adds layout. */
+/* The business and maintenance pages share these appearance and About-dialog styles. */
 .theme-page-controls { display:flex; justify-content:flex-end; align-items:center; min-height:44px; margin-bottom:16px; }
 .theme-auth-controls { position:absolute; top:16px; right:16px; z-index:50; }
 .theme-auth-controls + .auth-page { padding-top:76px; }
-.theme-control { position:relative; flex:none; z-index:40; }
-.theme-trigger { display:flex; align-items:center; gap:8px; min-height:44px; font-size:13px; padding:9px 14px; }
-.theme-trigger svg { width:19px; height:19px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
-.theme-trigger small { font-size:15px; }
-.theme-options { position:absolute; right:0; top:calc(100% + 7px); width:222px; padding:9px; margin:0; border:1px solid #b6c9e5; border-radius:14px; background:#fff; box-shadow:0 10px 30px #25365226; }
-.theme-options legend { position:absolute; width:1px; height:1px; clip-path:inset(50%); overflow:hidden; }
-.theme-options label { display:flex; align-items:center; gap:9px; padding:12px 9px; border-radius:9px; cursor:pointer; color:#1c2737; font-size:14px; min-height:46px; }
-.theme-options label:hover,.theme-options label.chosen { background:#eef4ff; }
-.theme-options label small { margin-left:auto; font-size:11px; color:#647184; }
-.theme-options input { accent-color:#0b54c5; width:17px; height:17px; }
-.theme-control input:focus-visible { outline:2px solid #0b54c5; outline-offset:3px; }
+.theme-trigger { display:inline-grid; place-items:center; width:44px; height:44px; min-height:44px; padding:0; border-radius:50%; flex:none; }
+.theme-trigger svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.theme-trigger:focus-visible { outline:2px solid var(--ui-primary); outline-offset:3px; }
 html[data-modal-family-task] .theme-page-controls { visibility:hidden; }
 
 /* Navy gray surfaces and brighter semantic money colors from the approved prototype. */
@@ -35,13 +27,12 @@ html[data-theme="dark"] .nav-item:hover { background:var(--dark-raised); }
 html[data-theme="dark"] .avatar { color:#dfc4ff; background:#493566; }
 html[data-theme="dark"] :is(.muted,.page-heading p,.sidebar-user small,.search-help,.list-title > span,.empty-small,.loading-state,.page-size,.sort-control,.pagination,.page-gap,.person-card-head time,.person-card-metrics,.event-facts,.event-title small,.detail-grid,.detail-grid small,.amount-unit,.hint-toggle,.summary-dates,.summary-next,.selection-confirmation small,.picker-help,.choice-details,.picker-option small,.dictionary-row small) { color:var(--ui-muted); }
 html[data-theme="dark"] :is(.detail-grid b,.event-facts strong,.person-card-metrics b,.card-metrics .metric b) { color:var(--ui-text); }
-html[data-theme="dark"] :is(.card,.table-scroller,.event-row,.mobile-card,.detail-card,.person-drawer,.recent-card,.option-menu,.picker-menu,.floating-menu,.theme-options,.preview-block,.dictionary-list,.same-name-list) {
+html[data-theme="dark"] :is(.card,.table-scroller,.event-row,.mobile-card,.detail-card,.person-drawer,.recent-card,.option-menu,.picker-menu,.floating-menu,.preview-block,.dictionary-list,.same-name-list) {
   background:var(--dark-surface); border-color:var(--ui-border); color:var(--ui-text); box-shadow:0 4px 18px #0003;
 }
-html[data-theme="dark"] :is(.row-menu-pop button,.option-row,.theme-options label,.entry-event-list .choice-title-line strong,.selected-event-title,.summary-event-title,.confirmation-heading strong,.summary-heading) { color:var(--ui-text); }
-html[data-theme="dark"] :is(.row-menu-pop button:hover,.row-menu-button:hover,.option-row:hover,.picker-option:hover,.theme-options label:hover,.theme-options label.chosen,.event-row:hover,.event-row.selected,.recent-card:hover) { background:var(--dark-raised); }
+html[data-theme="dark"] :is(.row-menu-pop button,.option-row,.entry-event-list .choice-title-line strong,.selected-event-title,.summary-event-title,.confirmation-heading strong,.summary-heading) { color:var(--ui-text); }
+html[data-theme="dark"] :is(.row-menu-pop button:hover,.row-menu-button:hover,.option-row:hover,.picker-option:hover,.event-row:hover,.event-row.selected,.recent-card:hover) { background:var(--dark-raised); }
 html[data-theme="dark"] :is(.option-row.selected,.data-table tbody tr.selected td,.mobile-card.selected,.entry-event-choice.selected) { background:var(--dark-selected); }
-html[data-theme="dark"] .theme-options label small { color:var(--ui-muted); }
 html[data-theme="dark"] :is(.field,.field-label) { color:#c3d1e4; }
 html[data-theme="dark"] :is(.field input,.field select,.field textarea,.select-trigger,.search-wrap,.picker-control,.amount-control,.sort-control select,.page-size select,.dictionary-add input,.dictionary-row input,.year-control input) {
   background:var(--dark-input); color:var(--ui-text); border-color:var(--dark-control-border);
@@ -94,11 +85,9 @@ html[data-theme="dark"] .alert.success { background:#163d2d; color:#a4e3bd; }
 html[data-theme="dark"] :is(.alert.error,.issue-list) { background:#492827; color:#ffb6ad; }
 html[data-theme="dark"] :is(.gift-tip,.search-hint-pop) { background:#20344e; color:#edf3fb; border-color:var(--dark-control-border); }
 html[data-theme="dark"] .related-view { background:var(--dark-raised); color:#d6e7ff; border-color:#9cc4ff; }
-html[data-theme="dark"] :is(.related-count span,.related-view small,.version-about-content .version-slogan,.version-about-content dt,.same-name-list p,.same-name-list small,.person-card-metrics,.row-chevron,.guide-footer small) { color:var(--ui-muted); }
+html[data-theme="dark"] :is(.related-count span,.related-view small,.same-name-list p,.same-name-list small,.person-card-metrics,.row-chevron,.guide-footer small) { color:var(--ui-muted); }
 html[data-theme="dark"] .related-conditions button { background:var(--dark-input); color:#bcd8ff; border-color:var(--dark-control-border); }
 html[data-theme="dark"] :is(.related-badge,.related-exit) { background:#2f67c0; color:#fff; border-color:#7daaf0; }
-html[data-theme="dark"] .version-about-content dd { color:var(--ui-text); }
-html[data-theme="dark"] :is(.version-about-content dl,.version-about-content dl div) { border-color:var(--ui-border); }
 
 /* All family dialogs (including nested confirmation, password, dictionary and about). */
 html[data-theme="dark"] .family-modal {
@@ -167,8 +156,22 @@ html[data-theme="dark"] ::selection { background:#426da2; color:#fff; }
 
 @media(max-width:700px) {
   .theme-page-controls { margin-bottom:12px; }
-  .theme-trigger { padding:8px 12px; }
   .theme-auth-controls { top:12px; right:12px; }
   .theme-auth-controls + .auth-page.auth-shell { padding-top:72px; }
 }
-@media(max-width:420px) { .theme-options { width:208px; } }
+
+.site-about-content { color:var(--ui-text,#1d2d44); min-width:0; }
+.site-about-brand { display:grid; justify-items:center; gap:6px; margin:2px 0 16px; }
+.site-about-brand strong { font-size:1.2rem; }
+.site-about-brand p { margin:0; font-size:.88rem; color:var(--ui-muted,#526781); }
+.site-about-rows { margin:0; }
+.site-about-rows > div { display:grid; grid-template-columns:minmax(6.25rem,auto) minmax(0,1fr); gap:12px; padding:9px 0; border-bottom:1px solid var(--ui-border,#dbe3ee); align-items:center; }
+.site-about-rows dt { color:var(--ui-muted,#526781); font-size:.9rem; }
+.site-about-rows dd { margin:0; text-align:right; overflow-wrap:anywhere; font-weight:600; }
+.site-about-copy { display:inline-flex; align-items:center; justify-content:flex-end; gap:8px; margin:-5px 0; padding:7px 2px; min-height:36px; border:0; background:transparent; color:var(--ui-primary,#1056ba); font:600 .94rem ui-monospace,monospace; cursor:pointer; }
+.site-about-copy svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.8; }
+.site-about-note { margin:12px 0; padding:12px; line-height:1.55; background:var(--ui-primary-soft,#edf4ff); border-radius:12px; }
+.site-about-details summary { cursor:pointer; padding:8px 0; color:var(--ui-primary,#1056ba); }
+.site-about-details dd { font:normal .85rem ui-monospace,monospace; }
+.site-about-feedback { display:block; font-size:.83rem; color:var(--ui-muted,#526781); }
+@media(max-width:420px) { .site-about-rows > div { gap:8px; padding:6px 0; } }

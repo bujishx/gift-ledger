@@ -16,6 +16,8 @@
 !deploy/single_yaml/
 !deploy/single_yaml/single_yaml_site.py
 !deploy/single_yaml/owner_guide.py
+!deploy/single_yaml/station_guides.py
+!deploy/single_yaml/安装前检查端口与网络.txt
 !deploy/single_yaml/owner_login_code.py
 !deploy/single_yaml/site_ca.py
 !deploy/single_yaml/certificate_policy.py

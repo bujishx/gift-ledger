@@ -1,15 +1,19 @@
 """Account assistance scoped to a session issued for this site's owner."""
 
-import os
 from dataclasses import asdict
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.dependencies import DatabaseSessionDependency
 from app.api.maintenance_access import HEADERS, require_owner
+from app.api.routes.site_maintenance import queue_status
 from app.core.security import PasswordPolicyError, UsernamePolicyError
+from app.services import maintenance_overview
+from app.services.maintenance_sessions import OwnerSessions
 from app.services.user_management import (
     UserNotFoundError,
     list_business_accounts,
@@ -19,6 +23,7 @@ from app.services.user_management import (
 router = APIRouter(
     prefix="/api/v1/maintenance", include_in_schema=False, dependencies=[Depends(require_owner)]
 )
+Owner = Annotated[OwnerSessions, Depends(require_owner)]
 
 
 class PasswordReset(BaseModel):
@@ -28,9 +33,14 @@ class PasswordReset(BaseModel):
 
 
 @router.get("/session")
-def current_owner():
+def current_owner(session: Owner):
     return JSONResponse(
-        {"authenticated": True, "role": "site_owner", "project": os.environ["GIFTLEDGER_PROJECT"]},
+        {
+            "authenticated": True,
+            "role": "site_owner",
+            "project": session.binding[0],
+            "instance": session.binding[1],
+        },
         headers=HEADERS,
     )
 
@@ -40,6 +50,28 @@ def accounts(db: DatabaseSessionDependency):
     return JSONResponse(
         {"accounts": [asdict(account) for account in list_business_accounts(db)]}, headers=HEADERS
     )
+
+
+@router.get("/overview")
+def overview(request: Request, db: DatabaseSessionDependency, owner: Owner):
+    root = request.app.state.maintenance_root
+    value = maintenance_overview.overview(db, owner, root)
+    try:
+        maintenance_overview.include_web_task(value, root, queue_status(root))
+    except HTTPException:
+        pass
+    return JSONResponse(value, headers=HEADERS)
+
+
+@router.get("/usage/{after}")
+def usage(
+    db: DatabaseSessionDependency, after: Annotated[int, Path(ge=0, le=2147483647)], owner: Owner
+):
+    try:
+        value = maintenance_overview.usage(db, owner, after)
+    except SQLAlchemyError as exc:
+        raise HTTPException(503, "暂时无法读取本站用户使用量。", headers=HEADERS) from exc
+    return JSONResponse(value, headers=HEADERS)
 
 
 @router.post("/accounts/reset-password")

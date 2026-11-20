@@ -13,6 +13,7 @@ from uuid import UUID
 
 import backup_ops as ops
 import single_yaml_site
+import site_about
 
 
 STATE = Path("/work/backup-state")
@@ -178,6 +179,12 @@ class Worker(ops.Worker):
 
     def _mount_arguments(self, run_dir):
         self.expected = worker_mounts(self.profile, run_dir, "backup_identity")
+        if "key_change_session" in self.profile:
+            operation = self.profile["key_change_session"]
+            ops.require(ops.ID.fullmatch(operation) and self.journal["session_id"] == operation,
+                        "candidate_backup_session_mismatch")
+            candidate = Path(self.profile["station"]) / STATE_NAME / ("key-change-" + self.profile["key_change_operation"])
+            self.expected["/work/identity"] = mount("bind", candidate, False)
         args = []
         for target, binding in self.expected.items():
             args.extend(["--mount", mount_argument(target, binding)])
@@ -221,6 +228,8 @@ class SiteBindings:
         }
         if service == "restore":
             expected[str(RESTORE_INPUT)] = mount("bind", self.station / "restore-input", False)
+            if site_about.RESTORE_TARGET in binds:
+                expected[site_about.RESTORE_TARGET] = mount("bind", self.station / site_about.DIRECTORY, True)
         elif service == "backup":
             expected[str(STORE)] = mount("bind", self.station / STORE_NAME, True)
         check_mounts(self.coordinator["mounts"], expected, {"/tmp", "/var/lib/mysql"})
@@ -229,6 +238,28 @@ class SiteBindings:
         ops.require(profile["project"] == self.project and profile["station"] == str(self.station)
                     and profile["maintenance_image"] == self.coordinator["image"], "site_profile_mismatch")
         return profile
+
+    def check_key_binding(self, profile, session):
+        """Under the coordinator lock, exclude stale profiles and interrupted key promotions."""
+        state, _ = self.directories()
+        path = state / "key-change.json"
+        if not os.path.lexists(path):
+            ops.require("key_change_session" not in profile, "candidate_backup_not_authorized")
+            return
+        row = ops.read_json(ops.no_links(path))
+        registered = ops.read_json(state / "site.json")
+        if row["stage"] == "testing":
+            ops.require(isinstance(session, str) and ops.ID.fullmatch(session)
+                        and session == profile.get("key_change_session") == row.get("trial", row["operation"])
+                        and profile.get("key_change_operation") == row["operation"]
+                        and profile["recipient"] == row["recipient"] and row["original"] == registered["backup_recipient"],
+                        "finish_authorized_key_change_first")
+        else:
+            ops.require(row["stage"] in ("preparing", "prepared", "cancelled", "completed")
+                        and profile["recipient"] == registered["backup_recipient"] and "key_change_session" not in profile,
+                        "key_registration_changed_or_incomplete")
+        ops.require(row["project"] == self.project and row["instance"] == profile["instance_id"],
+                    "key_change_site_mismatch")
 
     def service_mounts(self, project, role, mounts, contract):
         expected = {}
@@ -245,6 +276,8 @@ class SiteBindings:
             owner = "/run/giftledger-owner"
             if any(item.get("Destination") == owner for item in mounts):
                 expected[owner] = mount("bind", self.station / ".giftledger-owner", True)
+        if role == "api" and any(item.get("Destination") == site_about.API_TARGET for item in mounts):
+            expected[site_about.API_TARGET] = mount("bind", self.station / site_about.DIRECTORY, False)
         check_mounts(mounts, expected, TEMPORARY[role])
 
     def services(self, profile, docker):
@@ -317,6 +350,18 @@ def backup():
     report_backup(run_backup(site, site.profile(), docker, Worker))
 
 
+def candidate_profile(site, profile, operation):
+    state, _ = site.directories()
+    row = ops.read_json(ops.no_links(state / "key-change.json"))
+    ops.require(ops.ID.fullmatch(operation) and row["stage"] == "testing" and row["operation"] == operation
+                and row["project"] == site.project and row["instance"] == profile["instance_id"]
+                and row["original"] == profile["recipient"] and ops.RECIPIENT.fullmatch(row["recipient"]),
+                "candidate_backup_not_authorized")
+    trial = row.get("trial", operation)
+    ops.require(ops.ID.fullmatch(trial), "candidate_backup_session_mismatch")
+    return dict(profile, recipient=row["recipient"], key_change_session=trial, key_change_operation=operation)
+
+
 def run_backup(site, profile, docker, worker_factory, *, engine_session=None, recover=False):
     state, store = site.directories()
     pending = [row for _, row in ops.run_records(state)
@@ -349,7 +394,8 @@ def main():
     if sys.argv[1:] == ["prepare"]:
         single_yaml_site.main()
         site_directories()
-    elif sys.argv[1:] == ["refresh-guide"]:
+        site_about.prepare(single_yaml_site.DATA.parent)
+    elif sys.argv[1:] in (["refresh-guide"], ["rollback-public-files"]):
         single_yaml_site.main()
     elif sys.argv[1:] == ["backup"]:
         backup()

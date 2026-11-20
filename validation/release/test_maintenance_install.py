@@ -125,7 +125,8 @@ class Filesystem(unittest.TestCase):
         data = self.home / "station/data"
         identity = data / "root_config/site/control/identity.json"
         identity.parent.mkdir(parents=True)
-        identity.write_text(json.dumps({"project":"gift-qa","tls":{}}))
+        identity.write_text(json.dumps({"project":"gift-qa","instance_id":"41fa55d3-9628-4a44-8093-6bb7cf316fe8","tls":{}}))
+        (data / "root_config/maintenance").mkdir()
         cert = data / "tls_config/fullchain.pem"
         cert.parent.mkdir()
         cert.write_text("test certificate")
@@ -260,6 +261,58 @@ class Filesystem(unittest.TestCase):
             with self.assertRaisesRegex(install.host.HostError,"existing_site_or_version_differs"):
                 install.install(root,args,package)
             self.assertEqual((root/"state/binding.json").read_bytes(),identity)
+
+    def test_same_site_upgrade_can_resume_partial_tool_replacement_with_owner_identity_intact(self):
+        root = self.home/"fixture"; root.mkdir(mode=0o700)
+        state = root/"state"; state.mkdir(mode=0o700); (state/"worker.lock").touch(mode=0o600)
+        station = self.home/"station"; station.mkdir(mode=0o700)
+        (station/".giftledger-backup-state").mkdir(mode=0o700)
+        def version(tag):
+            inner = self.home/("inner-"+tag)
+            inner.write_bytes(tag.encode())
+            package = self.home/(tag+".pyz"); builder.build(inner,package)
+            data, members = install.read_package(package)
+            record = dict(project="fixture",instance=instance,origin="https://192.0.2.41:9443",station=str(station),
+                          station_inode=install.host.identity(station.stat()),platform="dsm",image="sha256:"+tag*64,
+                          archive_sha256=hashlib.sha256(inner.read_bytes()).hexdigest(),
+                          installer_sha256=hashlib.sha256(data).hexdigest())
+            return record, data, members
+        instance = str(uuid4())
+        previous, original, older = version("a")
+        record, data, members = version("b")
+        for name, raw in {install.ARCHIVE:original,**older}.items():
+            install.same_file(root/name,raw,0o400)
+        binding = {k:previous[k] for k in ("project","instance","station","station_inode")}
+        binding.update(archive=str(root/"dsm-backup.pyz"),sha256=previous["archive_sha256"],owner_digest="f"*64)
+        install.host.atomic_file(state/"binding.json",install.host.encoded(binding),0o600)
+        install.host.atomic_file(root/"installation.json",install.host.encoded(previous),0o600)
+        actual = install.replace_owned
+        # A stale DSM registration was rejected before a worker existed. A host
+        # upgrade may preserve the owner's existing staged key and its test attempt.
+        work = station / ".giftledger-backup-state"; trial = uuid4().hex
+        (work/"runs"/trial).mkdir(parents=True)
+        change = dict(project="fixture",instance=instance,operation=trial,stage="testing")
+        install.host.atomic_file(work/"key-change.json",install.host.encoded(change),0o600)
+        failed = dict(project="fixture",instance_id=instance,session_id=trial,stage="preflight-failed")
+        journal = work/"runs"/trial/"run.json"
+        install.host.atomic_file(journal,install.host.encoded(dict(failed,worker_id="a"*64)),0o600)
+        with self.assertRaisesRegex(install.host.HostError,"finish_site_tasks_before_upgrade"):
+            install.upgrade_installed(root,previous,record,data,members)
+        install.host.atomic_file(journal,install.host.encoded(failed),0o600)
+        def interrupted(path, before, after, mode):
+            actual(path,before,after,mode)
+            if path.name == "dsm-backup.pyz":
+                raise RuntimeError("fixture power loss")
+        with patch.object(install, "worker_pids", return_value=[]), patch.object(install, "replace_owned", side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError, "power loss"):
+                install.upgrade_installed(root,previous,record,data,members)
+        self.assertEqual(install.read_record(root),previous)
+        with patch.object(install, "worker_pids", return_value=[]):
+            install.upgrade_installed(root,previous,record,data,members)
+        self.assertEqual(install.read_record(root),record)
+        self.assertEqual(json.loads((work/"key-change.json").read_bytes()),change)
+        self.assertEqual(install.host.read_config(state),dict(binding,sha256=record["archive_sha256"]))
+        self.assertEqual((root/("previous-"+previous["installer_sha256"])/install.ARCHIVE).read_bytes(),original)
 
     def test_foreign_installation_rejected_before_initializing_site(self):
         pkg=self.home/"release.pyz"

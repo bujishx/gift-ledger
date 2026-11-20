@@ -45,7 +45,7 @@ class Guide(unittest.TestCase):
         for action in ("start", "status"):
             self.assertIn(f"/root/.giftledger-maintenance/{PROJECT}/maintenance-install.pyz {action} --project {PROJECT}", guide)
         self.assertIn(URL + "/maintenance", guide)
-        for action in ("登记旧钥匙", "生成新钥匙并登记", "查看备份结果", "下载已核验的备份 ZIP",
+        for action in ("上传旧钥匙登记", "生成新钥匙登记", "查看备份结果", "下载已核验的备份 ZIP",
                        "上传并预检", "确认恢复到本站"):
             self.assertIn(action, guide)
         command = owner_guide.login_code_command(PROJECT, URL, INSTANCE)

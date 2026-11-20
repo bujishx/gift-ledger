@@ -220,6 +220,35 @@ class OwnerSessions:
         if (mutation or origin is not None) and origin != self.origin:
             raise SessionDenied("maintenance_origin_refused")
 
+    def record_business_login(self, user_id: int, username: str) -> None:
+        # Per-instance owner state stays outside restored business records. Keep only
+        # the most recent successful sign-in, with no session identifier or client IP.
+        with self._transaction(write=True) as db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS business_logins("
+                "user_id INTEGER PRIMARY KEY, username TEXT NOT NULL, at INTEGER NOT NULL)"
+            )
+            db.execute(
+                "INSERT INTO business_logins(user_id,username,at) VALUES(?,?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, at=excluded.at",
+                (user_id, username, int(self.clock())),
+            )
+
+    def business_logins(self, user_ids: list[int]) -> dict[tuple[int, str], int]:
+        if not user_ids:
+            return {}
+        with self._transaction() as db:
+            if not db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='business_logins'"
+            ).fetchone():
+                return {}
+            slots = ",".join("?" for _ in user_ids)
+            rows = db.execute(
+                f"SELECT user_id,username,at FROM business_logins WHERE user_id IN ({slots})",
+                user_ids,
+            )
+            return {(uid, name): timestamp for uid, name, timestamp in rows}
+
     def _reserve(self, db: sqlite3.Connection, kind: str, now: int) -> str:
         db.execute("DELETE FROM attempts WHERE started <= ?", (now - ATTEMPT_SECONDS,))
         count = db.execute("SELECT count(*) FROM attempts WHERE kind=?", (kind,)).fetchone()[0]

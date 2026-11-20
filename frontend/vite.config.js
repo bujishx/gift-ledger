@@ -6,7 +6,7 @@ export default defineConfig({
     vue(),
     {
       name: "maintenance-business-styles",
-      apply: "build",
+      apply: (config, env) => env.command === "build" && !config.build?.ssr,
       enforce: "post",
       generateBundle(_options, bundle) {
         const entry = Object.values(bundle).find(

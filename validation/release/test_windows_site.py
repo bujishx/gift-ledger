@@ -219,8 +219,8 @@ class WindowsTools(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, "test file"):
                     self.client.main()
                 enrollment = prompts.call_args.args[0]
-                self.assertIn("1 生成新钥匙并登记", enrollment.splitlines())
-                self.assertIn("2 登记旧钥匙", enrollment.splitlines())
+                self.assertIn("1 生成新钥匙登记", enrollment.splitlines())
+                self.assertIn("2 上传旧钥匙登记", enrollment.splitlines())
                 select.assert_called_once_with(picker)
                 custody.assert_called_once_with(path, generate, age)
 
