@@ -103,6 +103,8 @@ def test_owner_navigation_preserves_the_maintenance_controls(site):
     assert controls.tags["owner-security"] == "details"
     assert controls.tags["lifecycle-download"] == "a"
     assert controls.tags["lifecycle-clear"] == "button"
+    assert controls.tags["lifecycle-heading"] == "h2"
+    assert "lifecycle-toggle" not in controls.ids
     overview = ["overview-services", "overview-resources", "overview-backup", "overview-counts"]
     assert [i for i in controls.ids if i in overview] == overview
     assert len(controls.business_links) == controls.new_tab_icons == 3

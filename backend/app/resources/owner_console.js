@@ -164,11 +164,6 @@ function createOwnerConsole({request, expired}) {
     const focus=target==="backup"?el("backup-actions"):target==="accounts"?el("account-help"):null;
     focus?.scrollIntoView({block:"center"}); focus?.querySelector("button")?.focus({preventScroll:true});
   }));
-  const lifecycleToggle = el("lifecycle-toggle"), lifecycleBody = el("lifecycle-body");
-  lifecycleToggle.addEventListener("click", () => {
-    lifecycleBody.hidden = !lifecycleBody.hidden;
-    lifecycleToggle.setAttribute("aria-expanded", String(!lifecycleBody.hidden));
-  });
   el("refresh-overview").addEventListener("click",overview);
   el("more-users").addEventListener("click",loadUsers);
   el("usage-search").addEventListener("input",()=>{renderUsers(); if (el("usage-search").value.trim()) loadUsers();});
@@ -184,8 +179,6 @@ function createOwnerConsole({request, expired}) {
       for (const id of ["tools-heading","backup-heading","signed-in-security","account-shortcut","certificate-help"]) el(id).hidden=!owner;
       el("owner-security").hidden = Boolean(owner);
       el(owner ? "signed-in-security" : "owner-security").append(el("owner-password"));
-      lifecycleBody.hidden = false;
-      lifecycleToggle.setAttribute("aria-expanded", "true");
       if (owner) {
         el("site-guide-name").textContent=owner.instance ? "data/"+owner.project+"-"+owner.instance.slice(0,8)+"-本站维护说明.txt" : "在 data 中查找本站维护说明.txt";
         el("overview-identity").textContent=owner.project+" · 本站实例 "+short(owner.instance);

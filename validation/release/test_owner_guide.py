@@ -127,6 +127,13 @@ class OwnerGuideTests(unittest.TestCase):
         self.assertFalse(Path(executed).exists())
         self.assertIn("label=com.docker.compose.project=" + PROJECT, (self.root / "filter").read_text())
 
+    def test_dsm_task_reminders_are_separate_lines_before_their_instructions(self):
+        with patch.object(owner_guide, "shipped_digest", return_value="ab" * 32):
+            notes = owner_guide.render(PROJECT, URL, IDENTITY, owner_login=True)
+        install = command(notes, '"$tmp/maintenance-install.pyz" install')
+        self.assertIn(install + "\n★ 创建此触发任务后，群晖重启后才保持维护页面的启用状态，建议群晖设置此任务。\n群晖还需在", notes)
+        self.assertIn("\n★ 创建此任务后，群晖才能自动更新网站证书，建议群晖设置此任务。\n群晖自动续签网站证书\n", notes)
+
     def test_daily_certificate_task_only_calls_compose_on_explicit_due_result(self):
         program = self.root / "probe"
         program.write_text('import json, os, sys\nfrom pathlib import Path\n'

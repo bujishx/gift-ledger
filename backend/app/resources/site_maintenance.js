@@ -32,12 +32,18 @@ window.addEventListener("storage",event=>{
 const form = document.querySelector("#maintenance");
 const tokenField = document.querySelector("#token");
 const result = document.querySelector("#result");
+const startBackup = form.querySelector('[value="backup"]');
+const checkBackup = form.querySelector('[value="status"]');
+const backupHelp = document.querySelector("#backup-help");
+const initialBackupHelp = backupHelp.textContent;
 document.querySelector("#site").textContent = location.origin;
 
+const backupProgress = {
+  queued: {button: "等待执行", title: "备份已提交，无需重复点击。", instruction: "可以关闭此页，稍后回来点「查看备份结果」。"},
+  running: {button: "备份中", title: "正在备份，请稍候。", instruction: "网站恢复后，点「查看备份结果」确认是否成功。"},
+};
 const messages = {
   idle: "本站还没有通过维护页提交的备份。",
-  queued: "任务已提交。服务器正在等待执行。",
-  running: "备份正在执行。网站恢复后，请再查看结果。",
   succeeded: "备份已实际解密核验，服务已回到备份前的状态。",
   failed: "备份未完成。请按本站维护说明在服务器查看原因。",
   needs_review: "上次备份需要站主核对。请按本站维护说明在服务器查看后再继续。",
@@ -45,6 +51,8 @@ const messages = {
 
 // Keep an uncertain submission's ID for a retry in this tab; never persist the owner credential.
 let submission;
+let backupState = "idle";
+let backupRequest = null;
 const downloadBackup = document.querySelector("#download-backup");
 let verifiedBundle = null;
 let activeDownload = null;
@@ -55,23 +63,53 @@ function clearDownload() {
   verifiedBundle = null;
   downloadBackup.hidden = true;
 }
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const credential = accessMode === "legacy" ? tokenField.value.trim() : accountSession;
-  if (!credential || form.hidden) return;
-  const backup = event.submitter?.value === "backup";
-  const buttons = form.querySelectorAll("button");
-  buttons.forEach((button) => { button.disabled = true; });
+function updateBackupControls() {
+  const progress = backupProgress[backupState];
+  const blocked = Boolean(progress) || backupState === "needs_review";
+  startBackup.textContent = progress?.button || "开始备份";
+  startBackup.disabled = blocked || Boolean(backupRequest);
+  checkBackup.disabled = Boolean(backupRequest);
+  checkBackup.className = blocked ? "primary" : "outline";
+  backupHelp.textContent = progress ? "备份期间，记账网站会短暂离线。" : initialBackupHelp;
+}
+
+function resetBackupView() {
+  backupRequest?.abort();
+  backupRequest = null;
+  backupState = "idle";
+  submission = undefined;
   clearDownload();
-  result.textContent = backup ? "正在向本站提交备份任务…" : "正在查看本站备份结果…";
+  result.replaceChildren();
+  updateBackupControls();
+}
+
+function showBackupProgress(data, progress) {
+  const card = document.querySelector("#backup-progress").content.firstElementChild.cloneNode(true);
+  card.querySelector("strong").textContent = progress.title;
+  card.querySelector(".backup-instruction").textContent = progress.instruction;
+  card.querySelector("[data-project]").textContent = data.project;
+  card.querySelector("[data-operation]").textContent = data.operation_id;
+  result.replaceChildren(card);
+}
+
+async function readOrStartBackup(backup, initial = false) {
+  const credential = accessMode === "legacy" ? tokenField.value.trim() : accountSession;
+  if (!credential || form.hidden || backupRequest || (backup && startBackup.disabled)) return;
+  const controller = new AbortController();
+  backupRequest = controller;
+  updateBackupControls();
+  clearDownload();
+  if (!initial && !backupProgress[backupState]) {
+    result.textContent = backup ? "正在向本站提交备份任务…" : "正在查看本站备份结果…";
+  }
   try {
-    const readStatus = () => ownerRequest(credential, "status");
+    const readStatus = () => ownerRequest(credential, "status", undefined, controller.signal);
     let response;
     if (backup && !submission) {
       const previous = await readStatus();
-      if (accessMode === "owner" && credential !== accountSession) return;
       if (previous.ok) {
         const current = await previous.clone().json();
+        if (controller.signal.aborted) return;
         if (["idle", "succeeded", "failed"].includes(current.state)) {
           submission = {
             operation_id: crypto.randomUUID().replaceAll("-", ""),
@@ -82,16 +120,27 @@ form.addEventListener("submit", async (event) => {
       if (!submission) response = previous;
     }
     if (backup && submission) {
-      response = await ownerRequest(credential, "backup", submission);
+      response = await ownerRequest(credential, "backup", submission, controller.signal);
     }
     if (!backup) response = await readStatus();
     const data = await response.json();
-    if (accessMode === "owner" && credential !== accountSession) return;
+    if (controller.signal.aborted) return;
     if (accessMode === "owner" && [401, 403].includes(response.status)) return expiredOwnerSession();
-    if (!response.ok && response.status !== 409) {
+    if (!response.ok && (response.status !== 409 || !data.state)) {
+      if (response.status === 409) submission = undefined;
       result.textContent = typeof data.detail === "string" ? data.detail : "无法读取维护结果，请稍后查看。";
       return;
     }
+    backupState = data.state;
+    if (response.status === 409 ||
+        (data.operation_id === submission?.operation_id && ["succeeded", "failed"].includes(data.state))) {
+      submission = undefined;
+    }
+    if (backupProgress[data.state]) {
+      showBackupProgress(data, backupProgress[data.state]);
+      return;
+    }
+    if (initial && data.state === "idle") return;
     const lines = [messages[data.state] || "状态暂时无法确认，请按本站维护说明在服务器查看。"];
     if (data.project) lines.push("项目 " + data.project);
     if (data.operation_id) lines.push("任务编号 " + data.operation_id);
@@ -106,17 +155,21 @@ form.addEventListener("submit", async (event) => {
     }
     if (data.code) lines.push("原因 " + data.code);
     result.textContent = lines.join("\n");
-    if (response.status === 409 ||
-        (data.operation_id === submission?.operation_id && ["succeeded", "failed"].includes(data.state))) {
-      submission = undefined;
-    }
   } catch {
-    if (accessMode === "legacy" || credential === accountSession)
+    if (!controller.signal.aborted)
       result.textContent = "暂时无法联系本站。网页恢复后请先查看备份结果，或按本站维护说明在服务器查看。";
   } finally {
-    buttons.forEach((button) => { button.disabled = false; });
+    if (backupRequest === controller) {
+      backupRequest = null;
+      updateBackupControls();
+    }
   }
+}
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  readOrStartBackup(event.submitter === startBackup);
 });
+tokenField.addEventListener("input", resetBackupView);
 
 const accountHelp = document.querySelector("#account-help");
 const accountList = document.querySelector("#account-list");
@@ -199,7 +252,7 @@ function ownerRequest(token, path, body, signal) {
 // The site-owner sign-in flow calls this after login and with null on logout.
 // No business cookie, backup authorization code, or value read from storage can open this panel.
 async function setMaintenanceOwnerSession(token) {
-  clearDownload();
+  resetBackupView();
   accountSession = null;
   ownerConsole.setOwner(null);
   keyEnrollment?.setOwner(null);
@@ -224,6 +277,7 @@ async function setMaintenanceOwnerSession(token) {
     accountHelp.hidden = false;
     ownerProject.textContent = "本站 " + data.project;
     updateOwnerView();
+    readOrStartBackup(false, true);
     return true;
   } catch {
     return false;

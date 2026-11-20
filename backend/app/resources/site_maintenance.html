@@ -141,14 +141,10 @@
         <button class="outline full" type="button" id="key-retry" hidden>继续核对登记结果</button>
       </section>
       <section id="lifecycle-panel" class="maintenance-section" hidden aria-labelledby="lifecycle-heading">
-        <h2 id="lifecycle-heading"><button type="button" id="lifecycle-toggle" aria-expanded="true" aria-controls="lifecycle-body">管理已登记的备份钥匙</button></h2>
+        <h2 id="lifecycle-heading">管理已登记的备份钥匙</h2>
         <div id="lifecycle-body">
           <p>需要本站服务器管理员授权。旧备份继续使用制作时对应的钥匙。</p>
           <p id="lifecycle-binding-note">正在读取本站钥匙登记状态。</p>
-          <div class="maintenance-actions" id="lifecycle-actions" hidden>
-            <button class="outline" type="button" id="lifecycle-recover">补领本站备份钥匙</button>
-            <button class="outline" type="button" id="lifecycle-prepare">更换今后备份的钥匙</button>
-          </div>
           <div class="maintenance-actions" id="lifecycle-sources" hidden>
             <button class="outline" type="button" id="lifecycle-existing">使用已有钥匙</button>
             <button class="outline" type="button" id="lifecycle-generate">生成新钥匙</button>
@@ -173,7 +169,13 @@
             <button class="primary" type="button" id="lifecycle-confirm">验证已保存的钥匙</button>
           </div>
           <output id="lifecycle-note" class="auth-hint" aria-live="polite"></output>
-          <button class="outline full" type="button" id="lifecycle-clear">清除本页临时资料</button>
+          <div class="lifecycle-footer">
+            <div class="maintenance-actions" id="lifecycle-actions" hidden>
+              <button class="outline" type="button" id="lifecycle-recover">补领本站备份钥匙</button>
+              <button class="outline" type="button" id="lifecycle-prepare">更换今后备份的钥匙</button>
+            </div>
+            <button class="outline full" type="button" id="lifecycle-clear">清除本页临时资料</button>
+          </div>
         </div>
       </section>
       <section class="owner-backup" id="backup-actions"><h2 id="backup-heading" hidden>手动备份</h2>
@@ -183,13 +185,23 @@
           <input id="token" type="password" required autocomplete="off"
                  autocapitalize="none" spellcheck="false" maxlength="64">
         </div>
-        <p class="auth-note maintenance-help">备份时网页会短暂离线。可以关闭浏览器，稍后重新打开本站，查看备份结果。</p>
+        <p id="backup-help" class="auth-note maintenance-help">备份时网页会短暂离线。可以关闭浏览器，稍后重新打开本站，查看备份结果。</p>
         <div class="maintenance-actions">
           <button class="outline" type="submit" value="status">查看备份结果</button>
           <button class="primary" type="submit" value="backup">开始备份</button>
         </div>
       </form>
       <output id="result" class="auth-hint" aria-live="polite"></output>
+      <template id="backup-progress">
+        <span class="backup-progress">
+          <strong></strong>
+          <span class="backup-instruction"></span>
+          <span class="backup-details">
+            <span>项目</span><span data-project></span>
+            <span>任务编号</span><span data-operation></span>
+          </span>
+        </span>
+      </template>
       <button id="download-backup" type="button" class="outline" hidden>下载已核验的备份 ZIP</button>
       </section>
       <section id="account-shortcut" hidden><h2>协助找回业务账号</h2><p>只忘记登录名时可查找账号。重置业务密码前请核实本人。</p>

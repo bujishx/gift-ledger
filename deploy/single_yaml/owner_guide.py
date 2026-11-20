@@ -130,7 +130,8 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
         paragraphs.append("启用本站网页维护（每站一次）\n在服务器终端执行 sudo -i，复制下面整段。它从本站 prepare 容器取出同版程序，"
                           "请先确认项目使用同一发行包的 YAML 和其中固定的镜像。命令核对 SHA-256、网址、项目及实例后安装，只为本站处理维护任务。Ubuntu 会启用本站的开机服务和证书定时任务。\n"
                           + host_helper_command(project, url, instance, "maintenance-install.pyz", "install")
-                          + "\n群晖还需在“控制面板 → 任务计划 → 新增 → 触发的任务 → 用户定义的脚本”新建并启用任务，"
+                          + "\n★ 创建此触发任务后，群晖重启后才保持维护页面的启用状态，建议群晖设置此任务。\n"
+                          "群晖还需在“控制面板 → 任务计划 → 新增 → 触发的任务 → 用户定义的脚本”新建并启用任务，"
                           f"用户选 root，事件选“开机”，名称可填 GiftLedger {project}。将下面一行粘贴到“任务设置”并保存。\n"
                           f"/usr/bin/python3 -I {installed} start --project {quote(project)}")
         paragraphs.append(
@@ -156,7 +157,7 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
         admin = f"/usr/bin/python3 -I {installed}"
         project_arg = f" --project {quote(project)}"
         paragraphs.append("本站备份钥匙补领与更换（群晖和 Ubuntu）\n"
-                          "在本站维护页打开“维护操作 → 管理已登记的备份钥匙”。由服务器管理员在本站交互终端 sudo -i 后按提示运行对应命令。\n"
+                          "在本站维护页选择“维护操作”，在“管理已登记的备份钥匙”卡片中选择补领或更换。由服务器管理员在本站交互终端 sudo -i 后按提示运行对应命令。\n"
                           f"补领本站备份钥匙    {admin} recover-key{project_arg}\n"
                           f"使用已有钥匙换钥    {admin} prepare-existing-key-change{project_arg}\n"
                           f"生成新钥匙换钥    {admin} prepare-key-change{project_arg}\n"
@@ -248,7 +249,8 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
         scheduled_renew = (copy_program + "\nif " + certificate_check +
                            '; then\n  exit 0\nelse\n  rc=$?\n  [ "$rc" -eq 3 ] || exit "$rc"\nfi\n' +
                            compose + " run --rm --no-deps -T certificate auto-renew")
-        paragraphs.append("群晖自动续签网站证书\n在 DSM 为本站设置一次，每天检查。网站证书剩余 30 天或更短时才续签，沿用已信任的根证书。"
+        paragraphs.append("★ 创建此任务后，群晖才能自动更新网站证书，建议群晖设置此任务。\n"
+                          "群晖自动续签网站证书\n在 DSM 为本站设置一次，每天检查。网站证书剩余 30 天或更短时才续签，沿用已信任的根证书。"
                           "实际换证时本站网页会短暂停用，请选平时少有人记账的时间，并与备份任务错开。\n"
                           "1. 打开“控制面板 → 任务计划 → 新增 → 计划的任务 → 用户定义的脚本”。\n"
                           f"2. 在“常规”中将任务命名为 GiftLedger TLS {address.port or 443}，用户选 root，勾选“已启用”。"
