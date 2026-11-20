@@ -10,6 +10,7 @@ import {
 } from "vue";
 import { allPages, api, queryString, upload, sensitiveDownload } from "./api";
 import { saveSensitiveDownload } from './lib/sensitiveDownload.js';
+import { readMaintenanceAccess } from './lib/siteAccess.js';
 import ThemeControl from './components/ThemeControl.vue';
 import { createEventIdentityChecker, eventIdentityPayload, eventDisplayTitle } from './lib/eventIdentity.js';
 import { createDetailAvailability, contactsForList } from './lib/detailAvailability.js';
@@ -78,6 +79,7 @@ function saveStatisticsView(value) {
   writeStatisticsView(statisticsKey, value);
 }
 const notice = ref("");
+const maintenanceAvailable = ref(false);
 const error = ref("");
 const authMode = ref("login");
 const credentials = reactive({ username: "", password: "" });
@@ -2081,6 +2083,7 @@ function personAction(action,person) { if(action === 'edit') openContact(person)
 function eventAction(action,row) { if(action === 'edit') openEventForm(row); if(action === 'delete') deleteEvent(row); }
 function giftAction(action,gift) { if(action === 'edit') openGiftEditor(gift); if(action === 'delete') deleteGift(gift); }
 onMounted(() => {
+  readMaintenanceAccess().then(available => { maintenanceAvailable.value = available; });
   bootstrap();
   window.addEventListener("resize", keepPersonCardInView);
   document.addEventListener("keydown", onKeydown);
@@ -2104,7 +2107,7 @@ onUnmounted(() => {
   <div v-if="loading" class="loading-screen">正在打开往来有礼…</div>
   <template v-else-if="!account || !account.profile_completed">
     <div class="theme-auth-controls"><ThemeControl /></div>
-    <AuthPage :state="authState" :actions="authActions" />
+    <AuthPage :state="authState" :actions="authActions" :maintenance-available="maintenanceAvailable" />
   </template>
         <div v-else class="app-shell">
     <aside class="sidebar" :inert="sensitiveOpen || (floatingCardOpen && !floatingPhoneView)">
@@ -2555,7 +2558,7 @@ onUnmounted(() => {
         </section>
 
         <StatsPage :key="pageRouteKey" v-else-if="page === 'stats'" :contacts="contacts" :dictionaries="dictionaries" :view-state="statisticsView" @update:view-state="saveStatisticsView" @drill="openLedgerForStatistics" />
-        <MePage v-else-if="page === 'me'" :state="meState" :actions="meActions" />
+        <MePage v-else-if="page === 'me'" :state="meState" :actions="meActions" :maintenance-available="maintenanceAvailable" />
               </div>
     </div>
 

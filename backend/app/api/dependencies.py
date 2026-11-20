@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 from app.api.errors import ApiError
 from app.api.security import (
     AUTH_COOKIE_NAME,
+    business_origin_is_trusted,
     csrf_token_is_valid,
-    request_origin_is_trusted,
+    entry_origin,
 )
 from app.core.config import Settings
 from app.core.database import probe_database
@@ -59,7 +60,7 @@ AuthenticationSessionDependency = Annotated[
 
 
 def require_trusted_origin(request: Request, settings: SettingsDependency) -> None:
-    if not request_origin_is_trusted(request, settings):
+    if not business_origin_is_trusted(request, settings, request.headers.get("origin")):
         raise ApiError(
             status.HTTP_403_FORBIDDEN,
             "ORIGIN_NOT_ALLOWED",
@@ -68,6 +69,18 @@ def require_trusted_origin(request: Request, settings: SettingsDependency) -> No
 
 
 TrustedOriginDependency = Annotated[None, Depends(require_trusted_origin)]
+
+
+def require_local_entry(request: Request, settings: SettingsDependency) -> None:
+    local = settings.site_origin
+    if local is None:
+        return
+    if entry_origin(request) != local:
+        raise ApiError(
+            status.HTTP_404_NOT_FOUND, "NOT_FOUND", "页面不存在", {"Cache-Control": "no-store"}
+        )
+    if request.headers.get("origin", local) != local:
+        raise ApiError(status.HTTP_403_FORBIDDEN, "ORIGIN_NOT_ALLOWED", "请求来源不受信任")
 
 
 def require_csrf_token(
@@ -213,7 +226,8 @@ def require_sensitive_action_csrf(request: Request, settings: SettingsDependency
             except ValueError:
                 pass
         if fetch_site not in {None, "same-origin"} or not (
-            fetch_site == "same-origin" or referer_origin in settings.trusted_origin_list
+            fetch_site == "same-origin"
+            or business_origin_is_trusted(request, settings, referer_origin)
         ):
             raise ApiError(status.HTTP_403_FORBIDDEN, "ORIGIN_NOT_ALLOWED", "请求来源不受信任")
     if not csrf_token_is_valid(request):

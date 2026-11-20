@@ -69,6 +69,13 @@ jobs:
           docker run --rm --network none -v "$PWD/backend/tests:/app/backend/tests:ro" -e PYTHONPATH=/app/backend --entrypoint /opt/venv/bin/python3.12 giftledger-ci/api:candidate -m pytest -q -p no:cacheprovider /app/backend/tests
       - name: Test fresh installation, trusted HTTPS, enrollment and real backup
         run: sudo python3 deploy/publication/smoke.py
+      - name: Upgrade a populated v1.8.1 site and toggle its HTTPS bookkeeping domain
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v1.8.1 --repo bujishx/gift-ledger --pattern docker-compose.yml --dir "$RUNNER_TEMP/v181"
+          echo "f32fdff28531e94cbfab0d0d98b147e4923cd5ac169011872f5709c6dbaede38  $RUNNER_TEMP/v181/docker-compose.yml" | sha256sum -c -
+          sudo python3 deploy/publication/upgrade_smoke.py --from-yaml "$RUNNER_TEMP/v181/docker-compose.yml"
       - name: Verify all five OCI manifests and layer hashes
         run: python3 deploy/publication/images.py verify "$RUNNER_TEMP/candidate" --commit "$GITHUB_SHA"
       - name: Retain the tested images for approval

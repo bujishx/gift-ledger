@@ -13,6 +13,9 @@ name: gift-ledger
 x-site-ip: &site-ip "${GIFTLEDGER_SITE_IP:-192.168.1.20}"
 # 把 8443 换成本站使用的空闲 HTTPS 端口。同一 IP 上的第二个站可用 8444（如空闲）。
 x-site-port: &site-port "${GIFTLEDGER_HTTPS_PORT:-8443}"
+# 可选的外网记账入口。仅在内网使用时留空。需要时填写完整 HTTPS 来源，例如 https://ledger.example.com:51888。
+# 反向代理需将 Host 固定为此域名及外部端口，转发到上方的内网 HTTPS 地址。站点维护仍使用内网 IP。
+x-reverse-proxy-origin: &reverse-proxy-origin "${GIFTLEDGER_REVERSE_PROXY_ORIGIN:-}"
 
 # 以下为程序配置，常规安装请保留原值
 # 站点资料在 data/ 中，以项目名和实例短号开头。备份、恢复与证书操作见“本站维护说明”，离线指南见 data/站主指南/。
@@ -203,6 +206,7 @@ services:
       initialize: {condition: service_completed_successfully}
     environment:
       <<: *app
+      GIFT_LEDGER_REVERSE_PROXY_ORIGIN: *reverse-proxy-origin
       GIFTLEDGER_MAINTENANCE_DIR: /run/giftledger-maintenance
       GIFTLEDGER_OWNER_STATE_DIR: /run/giftledger-owner
     entrypoint:
@@ -240,6 +244,10 @@ services:
     read_only: true
     depends_on:
       api: {condition: service_healthy}
+    environment:
+      GIFTLEDGER_SITE_IP: *site-ip
+      GIFTLEDGER_HTTPS_PORT: *site-port
+      GIFT_LEDGER_REVERSE_PROXY_ORIGIN: *reverse-proxy-origin
     ports:
       - target: 443
         published: *site-port

@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 
-from images import NETWORK_ASSET, has_network_guide, has_windows_tools
+from images import NETWORK_ASSET, RELEASE_TAG, has_network_guide, has_windows_tools
 
 EXPECTED = {
     NETWORK_ASSET,
@@ -84,9 +84,7 @@ class GitHub:
 
 
 def deliver(service, version, commit, folder):
-    if not re.fullmatch(
-        r"v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", version
-    ) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+    if not RELEASE_TAG.fullmatch(version) or not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Invalid release identity")
     files = {p.name: p for p in folder.iterdir() if p.is_file() and not p.is_symlink()}
     expected = EXPECTED if has_windows_tools() else EXPECTED - {"windows-site-tools.zip"}

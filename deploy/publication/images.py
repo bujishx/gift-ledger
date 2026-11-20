@@ -19,6 +19,7 @@ REF = re.compile(
     r"^(\s*image: )giftledger-candidate/(api|web|db|installer|backup):[a-zA-Z0-9_.-]+$",
     re.MULTILINE,
 )
+RELEASE_TAG = re.compile(r"v(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2,3}")
 PIN = re.compile(r"sha256:[a-f0-9]{64}")
 BASES = {
     "mysql": "mysql:8.4.11-oraclelinux9",
@@ -420,10 +421,8 @@ def release_files(out, refs, repository, version):
 
 def publish(out, commit, namespace, version):
     records = verify(out, commit)
-    if not re.fullmatch("[a-z0-9][a-z0-9_-]{1,29}", namespace) or not re.fullmatch(
-        r"v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", version
-    ):
-        raise ValueError("Expected Docker Hub namespace and vMAJOR.MINOR.PATCH")
+    if not re.fullmatch("[a-z0-9][a-z0-9_-]{1,29}", namespace) or not RELEASE_TAG.fullmatch(version):
+        raise ValueError("Expected Docker Hub namespace and a three- or four-part version tag")
     refs = {role: f"docker.io/{namespace}/giftledger-{role}" for role in ROLES}
     # Refuse all collisions before writing the first repository.
     existing = set()

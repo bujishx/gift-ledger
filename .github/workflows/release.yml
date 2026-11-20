@@ -42,7 +42,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "$CI_RUN" =~ ^[0-9]+$ && "$TESTED_SHA" =~ ^[a-f0-9]{40}$ && "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$CI_RUN" =~ ^[0-9]+$ && "$TESTED_SHA" =~ ^[a-f0-9]{40}$ && "$VERSION" =~ ^v(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){2,3}$ ]]
           default_branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
           test "$GITHUB_REF" = "refs/heads/$default_branch"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN" > "$RUNNER_TEMP/run.json"

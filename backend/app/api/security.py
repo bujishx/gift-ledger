@@ -11,9 +11,20 @@ CSRF_COOKIE_NAME = "gift_ledger_csrf"
 CSRF_HEADER_NAME = "X-CSRF-Token"
 
 
-def request_origin_is_trusted(request: Request, settings: Settings) -> bool:
-    origin = request.headers.get("origin")
-    return origin is not None and origin.rstrip("/") in settings.trusted_origin_list
+def entry_origin(request: Request) -> str:
+    # The web container forwards the verified browser-facing Host, including its port.
+    # The internal HTTP hop to Uvicorn does not change the browser's HTTPS origin.
+    authority = request.headers.get("host", "").lower().removesuffix(":443")
+    return f"https://{authority}"
+
+
+def business_origin_is_trusted(request: Request, settings: Settings, origin: str | None) -> bool:
+    if origin is None:
+        return False
+    local = settings.site_origin
+    if local is None:
+        return origin.rstrip("/") in settings.trusted_origin_list
+    return origin == entry_origin(request) and origin in {local, settings.reverse_proxy_origin}
 
 
 def csrf_token_is_valid(request: Request) -> bool:

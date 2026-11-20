@@ -129,7 +129,7 @@ import MeWorkflowSteps from './MeWorkflowSteps.vue';
 import RowMenu from '../components/RowMenu.vue';
 import LegacyImportReview from '../components/LegacyImportReview.vue';
 
-const props = defineProps({ state: { type: Object, required: true }, actions: { type: Object, required: true } });
+const props = defineProps({ state: { type: Object, required: true }, actions: { type: Object, required: true }, maintenanceAvailable: Boolean });
 const {
   profileForm,
   meSection,
@@ -161,7 +161,10 @@ const {
   logout,
 } = props.actions;
 
-const meSections = ME_SECTIONS;
+const meSections = computed(() => ME_SECTIONS.filter(section => props.maintenanceAvailable || section.id !== 'restore'));
+const activeSection = computed(() =>
+  meSection.value === 'restore' && !props.maintenanceAvailable ? 'data' : meSection.value
+);
 const error = computed(() => props.state.error || '');
 const notice = computed(() => props.state.notice || '');
 function clearFeedback() {
@@ -293,8 +296,8 @@ function onDictionaryMenu(item, action) {
         :key="section.id"
         type="button"
         role="tab"
-        :aria-selected="meSection === section.id"
-        :class="{ selected: meSection === section.id }"
+        :aria-selected="activeSection === section.id"
+        :class="{ selected: activeSection === section.id }"
         :disabled="busy"
         @click="selectSection(section.id)"
       >
@@ -308,7 +311,7 @@ function onDictionaryMenu(item, action) {
     </div>
 
     <!-- 资料与导出 -->
-    <div v-if="meSection === 'data'" class="me-grid">
+    <div v-if="activeSection === 'data'" class="me-grid">
       <div class="card form-card">
         <h2>本人信息</h2>
         <p class="muted">账本收支以这一位本人联系人自动判定。</p>
@@ -344,13 +347,13 @@ function onDictionaryMenu(item, action) {
       </div>
       <div class="card form-card">
         <h2>我的数据</h2>
-        <p class="muted">导出文件和个人备份只包含当前账号的数据。</p>
+        <p class="muted">只包含当前账号的数据。</p>
         <div class="me-resource-list">
           <div class="me-resource">
             <button type="button" class="outline link-button" :disabled="busy" @click="actions.exportAllData">导出全部数据（Excel）</button>
             <small>联系人、事件、记账记录与自定义字典项的完整表格；下载前验证当前账号密码。</small>
           </div>
-          <div class="me-resource">
+          <div v-if="maintenanceAvailable" class="me-resource">
             <button type="button" class="outline link-button" :disabled="busy" @click="actions.downloadPersonalBackup">下载个人账本备份</button>
             <small>.giftledger 备份，可在“备份恢复”中还原；下载前验证当前账号密码。</small>
           </div>
@@ -368,7 +371,7 @@ function onDictionaryMenu(item, action) {
 
     <!-- 导入旧账 -->
     <div
-      v-else-if="meSection === 'import'"
+      v-else-if="activeSection === 'import'"
       class="card form-card me-workflow"
     >
       <h2>导入旧账</h2>
@@ -489,7 +492,7 @@ function onDictionaryMenu(item, action) {
 
     <!-- 备份恢复 -->
     <div
-      v-else-if="meSection === 'restore'"
+      v-else-if="activeSection === 'restore'"
       class="card form-card me-workflow"
     >
       <h2>恢复个人备份</h2>
@@ -696,7 +699,7 @@ function onDictionaryMenu(item, action) {
         版本与站点信息 <span aria-hidden="true">›</span>
       </button>
     </footer>
-    <SiteAbout v-if="versionInfoOpen" @close="versionInfoOpen=false" />
+    <SiteAbout v-if="versionInfoOpen" :maintenance-available="maintenanceAvailable" @close="versionInfoOpen=false" />
   </section>
 </template>
 

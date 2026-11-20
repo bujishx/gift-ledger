@@ -187,6 +187,72 @@ def test_empty_target_and_restarted_api_accept_own_verified_session(site):
         ).read_bytes() == operation.encode() + b"\n"
 
 
+def test_proxy_business_session_and_private_operations(site):
+    public = "https://ledger.example:51888"
+    site.settings = Settings(**{**site.settings.model_dump(), "reverse_proxy_origin": public})
+    site.seed()
+    credentials = {"username": "ledger_admin", "password": site.old_password}
+    with site.client() as client:
+        login_path = "/api/v1/auth/login"
+        reply = client.post(public + login_path, json=credentials, headers={"Origin": public})
+        assert reply.status_code == 200
+        assert client.get(public + "/api/v1/auth/me").json()["username"] == "ledger_admin"
+        csrf = reply.cookies["gift_ledger_csrf"]
+        update_headers = {"Origin": public, "X-CSRF-Token": csrf}
+        verify_path = public + "/api/v1/auth/gift-changes/verify"
+        assert (
+            client.post(
+                verify_path, json={"password": site.old_password}, headers=update_headers
+            ).status_code
+            == 204
+        )
+        assert (
+            client.post(
+                verify_path, json={"password": site.old_password}, headers={"Origin": public}
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                public + "/api/v1/auth/sensitive-actions/verify",
+                json={"password": site.old_password, "purpose": "personal_backup"},
+                headers=update_headers,
+            ).status_code
+            == 404
+        )
+        assert client.get("/api/v1/auth/me").status_code == 401
+        for target, origin in ((public, ORIGIN), (ORIGIN, public), (public, public[:-1] + "9")):
+            reply = client.post(target + login_path, json=credentials, headers={"Origin": origin})
+            assert reply.status_code == 403
+        assert login(client, "ledger_admin", site.old_password).status_code == 200
+
+        # Navigations and downloads are local-only even when the browser sends no Origin.
+        for path in (
+            BASE + "/page",
+            BASE + "/session",
+            BASE + "/backups/example/download",
+            "/api/v1/backups/personal",
+            "/api/v1/admin/backups/database",
+            "/api/v1/restores/personal/safety-backups/test",
+        ):
+            assert client.get(public + path).status_code == 404
+        for path in (BASE + "/backup", BASE + "/restore", BASE + "/key-enrollment"):
+            reply = client.post(public + path, json={}, headers={"Origin": public})
+            assert reply.status_code == 404
+
+        token = site.verified()
+        assert client.get(BASE + "/session", headers=headers(token)).status_code == 200
+        assert client.get(BASE + "/page").status_code == 200
+        cors = client.options(
+            ORIGIN + login_path,
+            headers={
+                "Origin": public,
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        assert "access-control-allow-origin" not in cors.headers
+
+
 def test_overview_usage_and_last_successful_login_do_not_expose_ledger_or_other_sites(site):
     site.seed()
     token = site.verified()

@@ -83,6 +83,12 @@ class Tests(unittest.TestCase):
         images.release_files(site, self.refs, "example/giftledger", "v1.5.0")
         return site
 
+    def test_release_revision_tags(self):
+        for tag in ("v1.8.2", "v1.8.2.1", "v10.0.0.12"):
+            self.assertIsNotNone(images.RELEASE_TAG.fullmatch(tag))
+        for tag in ("v1.8", "v1.8.2.01", "v1.8.2.1.1", "v1.8.2rc1"):
+            self.assertIsNone(images.RELEASE_TAG.fullmatch(tag))
+
     def test_smoke_waits_for_docker_health_after_https_is_ready(self):
         compose = ["docker", "compose", "-p", "sample"]
         ids = "a\nb\nc\n"

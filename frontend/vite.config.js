@@ -5,6 +5,15 @@ export default defineConfig({
   plugins: [
     vue(),
     {
+      name: "local-site-access",
+      configureServer(server) {
+        server.middlewares.use("/site-access.json", (_request, response) => {
+          response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+          response.end('{"maintenance":true}');
+        });
+      },
+    },
+    {
       name: "maintenance-business-styles",
       apply: (config, env) => env.command === "build" && !config.build?.ssr,
       enforce: "post",

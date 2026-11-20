@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue';
 import ModalShell from './ModalShell.vue';
+defineProps({ maintenanceAvailable: Boolean });
 const emit = defineEmits(['close']);
 const content = ref(null);
 const aborter = new AbortController();
@@ -31,7 +32,7 @@ onUnmounted(() => {
     <div ref="content" class="site-about-content" aria-live="polite">正在读取本站信息…</div>
     <template #footer>
       <div class="site-about-actions">
-        <a class="cross-site-link" href="/maintenance" target="_blank" rel="noopener" aria-label="站点维护（在新标签打开）" title="站点维护（在新标签打开）">
+        <a v-if="maintenanceAvailable" class="cross-site-link" href="/maintenance" target="_blank" rel="noopener" aria-label="站点维护（在新标签打开）" title="站点维护（在新标签打开）">
           站点维护<svg aria-hidden="true"><use :href="'/maintenance/link-icons.svg#new-tab'"/></svg>
         </a>
         <button type="button" class="outline" @click="emit('close')">关闭</button>

@@ -11,6 +11,7 @@ from app.api.dependencies import (
     SessionIdDependency,
     SettingsDependency,
     TrustedOriginDependency,
+    require_local_entry,
     sensitive_action_api_error,
 )
 from app.api.errors import ApiError, ErrorResponse
@@ -232,6 +233,7 @@ def verify_gift_changes(
 )
 def verify_sensitive_action(
     payload: SensitiveActionVerifyRequest,
+    request: Request,
     response: Response,
     current_user: CurrentUserDependency,
     session_id: SessionIdDependency,
@@ -240,6 +242,8 @@ def verify_sensitive_action(
     _csrf: CsrfProtectionDependency,
 ) -> SensitiveActionGrantResponse:
     response.headers["Cache-Control"] = "no-store"
+    if payload.purpose in {"personal_backup", "safety_backup"}:
+        require_local_entry(request, settings)
     try:
         store.begin_password_attempt(current_user.id)
     except SensitiveActionError as exc:

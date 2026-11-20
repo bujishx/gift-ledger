@@ -1,9 +1,10 @@
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.dependencies import require_local_entry
 from app.api.errors import register_error_handlers
 from app.api.routes import site_about
 from app.api.routes.admin_backups import router as admin_backups_router
@@ -52,10 +53,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.add_middleware(RequestLoggingMiddleware)
     register_error_handlers(application)
+    private = APIRouter(dependencies=[Depends(require_local_entry)])
     maintenance_dir = os.environ.get("GIFTLEDGER_MAINTENANCE_DIR")
     if maintenance_dir and Path(maintenance_dir).is_absolute():
         application.state.maintenance_root = Path(maintenance_dir)
-        application.include_router(site_maintenance_router)
+        private.include_router(site_maintenance_router)
     owner_dir = os.environ.get("GIFTLEDGER_OWNER_STATE_DIR")
     if owner_dir is not None:
         if not Path(owner_dir).is_absolute() or not hasattr(application.state, "maintenance_root"):
@@ -63,11 +65,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "Owner sessions require absolute site maintenance and state directories"
             )
         application.state.maintenance_owner_dir = Path(owner_dir)
-        application.include_router(site_about.owner)
-        application.include_router(maintenance_login_router)
-        application.include_router(maintenance_accounts_router)
-        application.include_router(maintenance_enrollment_router)
-        application.include_router(maintenance_restore_router)
+        private.include_router(site_about.owner)
+        private.include_router(maintenance_login_router)
+        private.include_router(maintenance_accounts_router)
+        private.include_router(maintenance_enrollment_router)
+        private.include_router(maintenance_restore_router)
+    private.include_router(personal_restore_router, prefix="/api/v1")
+    private.include_router(admin_backups_router, prefix="/api/v1")
+    application.include_router(private)
     application.include_router(site_about.business, prefix="/api/v1")
     application.include_router(health_router, prefix="/api/v1")
     application.include_router(home_router, prefix="/api/v1")
@@ -77,11 +82,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(exports_router, prefix="/api/v1")
     application.include_router(contacts_router, prefix="/api/v1")
     application.include_router(imports_router, prefix="/api/v1")
-    application.include_router(personal_restore_router, prefix="/api/v1")
     application.include_router(ledger_router, prefix="/api/v1")
     application.include_router(ledger_queries_router, prefix="/api/v1")
     application.include_router(statistics_router, prefix="/api/v1")
-    application.include_router(admin_backups_router, prefix="/api/v1")
     return application
 
 

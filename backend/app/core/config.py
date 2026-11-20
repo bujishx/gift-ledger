@@ -1,10 +1,11 @@
 # ruff: noqa: RUF002, RUF003
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
@@ -59,6 +60,7 @@ class Settings(BaseSettings):
     trusted_origins: str = (
         "http://127.0.0.1:8000,http://localhost:8000,http://127.0.0.1:5173,http://localhost:5173"
     )
+    reverse_proxy_origin: str = ""
 
     model_config = SettingsConfigDict(
         env_file=BACKEND_DIR / ".env",
@@ -68,6 +70,25 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @field_validator("reverse_proxy_origin")
+    @classmethod
+    def validate_reverse_proxy_origin(cls, value: str) -> str:
+        if not value:
+            return ""
+        match = re.fullmatch(r"https://([a-zA-Z0-9.-]{1,253})(?::([1-9][0-9]{0,4}))?/?", value)
+        if match:
+            host, port = match.groups()
+            labels = host.lower().split(".")
+            if (
+                len(labels) >= 2
+                and re.search("[a-z]", labels[-1])
+                and all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", s) for s in labels)
+                and (port is None or int(port) <= 65535)
+            ):
+                authority = host.lower() if port in {None, "443"} else f"{host.lower()}:{port}"
+                return f"https://{authority}"
+        raise ValueError("反向代理地址应为 HTTPS 域名及可选端口，例如 https://ledger.example:8443")
+
     @model_validator(mode="after")
     def validate_security_settings(self) -> "Settings":
         self._validate_database_target()
@@ -75,6 +96,13 @@ class Settings(BaseSettings):
         origins = self.trusted_origin_list
         if not origins:
             raise ValueError("GIFT_LEDGER_TRUSTED_ORIGINS 至少需要配置一个来源")
+        if self.reverse_proxy_origin:
+            if len(origins) != 1 or urlsplit(origins[0]).scheme != "https":
+                raise ValueError("启用反向代理时必须保留一个内网 HTTPS 站点地址")
+            if urlsplit(origins[0]).hostname == urlsplit(self.reverse_proxy_origin).hostname:
+                raise ValueError("反向代理域名须与内网站点主机不同")
+            if not self.auth_cookie_secure:
+                raise ValueError("反向代理入口必须启用安全 Cookie")
 
         if not self.auth_cookie_secure:
             if self.environment not in {"development", "test"}:
@@ -196,6 +224,14 @@ class Settings(BaseSettings):
                 raise ValueError(f"可信来源格式无效：{origin}")
             origins.append(origin)
         return tuple(dict.fromkeys(origins))
+
+    @property
+    def site_origin(self) -> str | None:
+        """Single-site deployments bind the private entry to this HTTPS origin."""
+        origins = self.trusted_origin_list
+        if len(origins) == 1 and (self.environment == "production" or self.reverse_proxy_origin):
+            return origins[0]
+        return None
 
 
 @lru_cache

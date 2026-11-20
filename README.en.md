@@ -21,9 +21,17 @@ On a Mac, import the root certificate whose fingerprint you verified into your l
 
 Restart the server and confirm the same account still shows that gift. Contact the site owner if you forget your login name or password. The installed YAML pins the image digests, so the site owner chooses when to upgrade.
 
+## Optional HTTPS domain for remote bookkeeping
+
+Leave `x-reverse-proxy-origin` empty for a LAN-only site. To enable remote bookkeeping, set it to the browser-facing HTTPS origin, for example `"${GIFTLEDGER_REVERSE_PROXY_ORIGIN:-https://ledger.example.org:51888}"`. Keep the LAN IP, port and data directory. Compose still publishes only the LAN port.
+
+Configure the DSM HTTPS reverse proxy with a certificate for the public domain and the site's original LAN HTTPS address as its destination. Set the upstream `Host` on that public rule to the public domain and external port, for example `ledger.example.org:51888` (443 can be omitted). Preserve the browser's `Origin`. Expose only the reverse proxy on your router. The LAN site's port must stay private. A request carrying common proxy headers and the LAN Host is rejected.
+
+Apply the YAML in the existing project. Sign in separately on the domain and LAN address to access the same ledger. Verify that the public domain denies `/maintenance` and the LAN maintenance page opens. Site maintenance, database backups and personal backup and restore are available on the LAN. To turn off remote access, clear the optional value and reapply the project. When upgrading, first keep a verified backup off the server. [Upgrade guide (Chinese)](docs/站主升级.md)
+
 ## Find a maintenance action
 
-Choose **站点维护** (Site maintenance) below the registration link on the ledger sign-in page or in the ledger’s About dialog. To return, choose **在新标签打开记账网站** (Open the ledger in a new tab) on the maintenance sign-in page, at the bottom left of the sidebar on desktop and tablet, at the bottom of the page on a phone, or in the maintenance About dialog. Each link opens a new tab and keeps the original tab open. The ledger and site owner sign-ins are independent.
+Choose **站点维护** (Site maintenance) below the registration link on the LAN ledger sign-in page or in the ledger’s About dialog. To return, choose **在新标签打开记账网站** (Open the ledger in a new tab) on the maintenance sign-in page, at the bottom left of the sidebar on desktop and tablet, at the bottom of the page on a phone, or in the maintenance About dialog. Each link opens a new tab and keeps the original tab open. The ledger and site owner sign-ins are independent.
 
 After signing in as the site owner, open the overview for service status, backup verification, certificate expiration and available space on the backup volume. Open Registered users for login names, profile names, usage counts and recent successful sign-ins. After verifying the account holder, use the same page to look up the login name or reset the business password.
 
