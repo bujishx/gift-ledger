@@ -244,7 +244,9 @@ def readback(exchange, helper, record):
     if out is None:
         return None
     cfg = helper.cfg
-    require(out.keys() == {"registered", "target"} and type(out["registered"]) is bool, "invalid_enrollment_target")
+    require(out.keys() in ({"registered", "target"}, {"registered", "target", "filename_supported"})
+            and out.get("filename_supported", True) is True and type(out["registered"]) is bool,
+            "invalid_enrollment_target")
     wire.check_target(out["target"], cfg["project"], cfg["instance"])
     public = record["public"]
     if "target" in public:

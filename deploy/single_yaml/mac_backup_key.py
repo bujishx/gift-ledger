@@ -624,10 +624,17 @@ def _exchange(channel, args, secret, recipient, age, streams):
                     reader.terminate()
                     reader.communicate()
 
-        target, registered = target_info(read_when_ready("target.json"), args.project, getattr(args, "instance_id", None))
+        offer = read_when_ready("target.json")
+        target, registered = target_info(offer, args.project, getattr(args, "instance_id", None))
         packet = None
         if not registered:
             packet = packet_for(target, secret, recipient, age)
+            filename = getattr(args, "enrollment_filename", None)
+            if (isinstance(filename, str) and not args.restore_key and json.loads(offer).get("filename_supported") is True
+                    and filename.isprintable() and filename not in ("", ".", "..")
+                    and "/" not in filename and "\\" not in filename and "AGE-SECRET-KEY-" not in filename.upper()
+                    and len(filename.encode("utf-8")) <= 255):
+                packet["filename"] = filename
             write = run(channel, host, cd + "umask 077 && cat > packet.upload && mv packet.upload packet.json", encoded(packet))
             check(write.returncode == 0, "加密交接未送达。")
         entry = verify_receipt(read_when_ready("receipt.json"), target, secret, recipient,
@@ -682,6 +689,7 @@ def main():
     check(1 <= args.port <= 65535, "SSH 端口无效。")
     check(not (args.restore_key and args.generate), "恢复须选择源备份对应的已有原钥匙。")
     path, generate = enrollment_path(args)
+    args.enrollment_filename = Path(path).name
     age = Age()
     secret, recipient = custody(path, generate, age)
     print(f"已在本机核对原钥匙，准备向 {args.project} 登记并等待回执。", file=sys.stderr, flush=True)

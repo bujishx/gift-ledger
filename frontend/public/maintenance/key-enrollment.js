@@ -12,6 +12,7 @@ let owner, generatedRecipient, operation, generation = 0, busy = false, download
 let binding = null, sampleTimer, requestNumber = 0;
 let justEnrolled = null;
 const checkFile = element("check-file");
+let choosingLocal = false;
 
 function verifiedText(proof) {
   if (proof?.state === "none") return "尚无解密核验通过的记录";
@@ -83,22 +84,23 @@ element("copy").addEventListener("click", async () => {
 element("check").addEventListener("click", () => {
   if (binding?.state !== "registered") return;
   checkFile.value = "";
+  choosingLocal = true;
   checkFile.click();
 });
+checkFile.addEventListener("cancel", () => { choosingLocal = false; });
 checkFile.addEventListener("change", async () => {
   const selected = checkFile.files[0], session = owner;
   if (!session || !selected) return;
   try {
     const {recipient} = await readIdentity(selected, await loadAge());
-    await refreshBinding(session);
     if (session !== owner) return;
     feedback.textContent = binding?.state !== "registered" ? "暂时无法核实本站当前登记的钥匙。"
       : recipient === binding.recipient ? "这份本地钥匙与本站匹配。" : "这份本地钥匙与本站不匹配。";
   } catch (error) {
     if (session === owner) feedback.textContent = error instanceof KeyError ? error.message : "无法读取所选钥匙。";
-  } finally { checkFile.value = ""; }
+  } finally { checkFile.value = ""; choosingLocal = false; }
 });
-window.addEventListener("focus", () => { if (owner && !document.hidden) refreshBinding(); });
+
 
 function clear() {
   generation++;
@@ -122,6 +124,7 @@ function clear() {
 export function setOwner(session) {
   clearInterval(sampleTimer);
   requestNumber++;
+  choosingLocal = false;
   binding = null;
   justEnrolled = null;
   clear();
@@ -133,7 +136,7 @@ export function setOwner(session) {
   if (session) {
     refreshBinding(session);
     showLastResult(session, generation);
-    sampleTimer = setInterval(() => { if (!document.hidden) refreshBinding(session); }, 15000);
+    sampleTimer = setInterval(() => { if (!document.hidden && !choosingLocal) refreshBinding(session); }, 15000);
   }
 }
 

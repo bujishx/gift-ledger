@@ -162,12 +162,14 @@ class EnrollmentWorker(unittest.TestCase):
         helper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(helper)
         local_key, transfer, identity, scratch = [self.base / name for name in ("local", "transfer", "identity", "scratch")]
-        for directory in (transfer, identity, scratch):
+        state = self.base / "state"
+        for directory in (transfer, identity, scratch, state):
             directory.mkdir(mode=0o700)
         subprocess.run([keys.KEYGEN, "-o", str(local_key)], capture_output=True, check=True)
         secret, = [line + b"\n" for line in local_key.read_bytes().splitlines() if line.startswith(b"AGE-SECRET-")]
         recipient = subprocess.run([keys.KEYGEN, "-y"], input=secret, capture_output=True, check=True).stdout.decode().strip()
         with patch.object(keys, "EXCHANGE", self.exchange), patch.object(keys, "TRANSFER", transfer), \
+                patch.object(keys, "IDENTITY", identity), patch.object(helper, "STATE", state), \
                 patch.object(keys, "project_identity", return_value=self.instance):
             transport, target = helper.transport_target(self.cfg["project"], self.instance, scratch, False)
             wire.check_target(target, self.cfg["project"], self.instance)
@@ -177,13 +179,16 @@ class EnrollmentWorker(unittest.TestCase):
                                     input=wire.encode(payload), capture_output=True, check=True).stdout
             request = dict(public, format="gift-ledger-gui-key-import-request-v1",
                            ciphertext="key-transfer-" + self.op + ".age", ciphertext_sha256=wire.digest(cipher))
-            packet = {"ciphertext_b64": base64.b64encode(cipher).decode(), "request": request}
+            filename = "家庭备份.agekey"
+            packet = {"ciphertext_b64": base64.b64encode(cipher).decode(), "request": request, "filename": filename}
             self.assertEqual(wire.check_packet(packet, self.op, target), request)
             (self.exchange / "packet.json").write_bytes(wire.encode(packet))
             proof = helper.receive(identity, self.cfg["project"], self.instance, transport, target, scratch)
             wire.check_receipt(proof, target, request)
             self.assertEqual(proof["identity_sha256"], wire.digest(secret))
             self.assertEqual(proof, helper.committed(identity, self.cfg["project"], self.instance))
+            self.assertEqual(json.loads((state / "key-label.json").read_bytes()),
+                             dict(self.binding, recipient=recipient, filename=filename))
             self.assertNotIn(secret.rstrip(), wire.encode(proof))
             self.assertNotIn(secret.rstrip(), (self.exchange / "packet.json").read_bytes())
 

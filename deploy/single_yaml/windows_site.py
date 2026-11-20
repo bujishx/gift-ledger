@@ -324,6 +324,7 @@ def main():
         else:
             args.key = choose("select-key")
     path = args.generate or args.key
+    args.enrollment_filename = Path(path).name
     age = keys.Age()
     secret, recipient = custody(path, bool(args.generate), age)
     args.restore_key = False

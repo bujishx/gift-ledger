@@ -1,7 +1,7 @@
 """Exercise the distributed site-owner client on a native Windows filesystem."""
 
 import os
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext, redirect_stderr, redirect_stdout
 import importlib
 import io
 import json
@@ -345,6 +345,66 @@ class WindowsTools(unittest.TestCase):
                 for call in (target, receipt):
                     self.assertEqual(call.kwargs["stdin"], subprocess.DEVNULL)
                     self.assertIn("-T", call.args[0])
+
+    def test_packaged_first_enrollment_sends_basename_only_to_capable_daily_target(self):
+        # Use the two shipped CLI entry points; replace only local custody,
+        # encryption and SSH I/O. The real worker verifies this packet in its
+        # native age integration test.
+        root = Path(__file__).resolve().parents[2]
+        entries = [(self.client, self.client.keys, True)]
+        if (root / "deploy/publication/images.py").is_file():
+            import images
+            extracted = self.root / "mac-tools"
+            archive = self.root / "mac-site-tools.zip"
+            images.write_site_tools_zip(archive, (root / "deploy/single_yaml/docker-compose.yml").read_bytes())
+            with ZipFile(archive) as package:
+                package.extractall(extracted)
+            with mock.patch.object(sys, "path", [str(extracted), *sys.path]), mock.patch.dict(sys.modules):
+                sys.modules.pop("mac_backup_key", None)
+                mac = importlib.import_module("mac_backup_key")
+            entries.append((mac, mac, False))
+        name = "家庭备份.agekey"
+        secret, public = b"synthetic test key\n", "age1" + "q" * 58
+        for client, keys, windows in entries:
+            modes = [(True, False), (False, False)] if windows else [(True, False), (False, False), (True, True)]
+            for capable, restore in modes:
+                with self.subTest(windows=windows, capable=capable, restore=restore), ExitStack() as stack:
+                    patch = stack.enter_context
+                    args = ["--host", "owner@nas", "--project", "test", "--project-dir", "/srv/test",
+                            "--key", str(self.root / name)]
+                    if windows:
+                        patch(mock.patch.object(client, "os", SimpleNamespace(name="nt")))
+                        args.insert(0, "enroll")
+                    if restore:
+                        args.append("--restore-key")
+                    patch(mock.patch.object(sys, "argv", [str(client.__file__), *args]))
+                    patch(redirect_stdout(io.StringIO()))
+                    patch(redirect_stderr(io.StringIO()))
+                    patch(mock.patch.object(client, "session", return_value=nullcontext(["ssh"])))
+                    patch(mock.patch.object(client, "custody", return_value=(secret, public)))
+                    patch(mock.patch.object(keys, "Age")).return_value.run.return_value = b"test ciphertext"
+                    patch(mock.patch.object(keys, "ssh_output", return_value=nullcontext({})))
+                    calls = patch(mock.patch.object(keys, "run", return_value=subprocess.CompletedProcess(
+                        [], 0, b"/tmp/giftledger-key-12345678")))
+                    started = dict(format="gift-ledger-gui-key-target-v1", operation_id="a"*32, project="test",
+                                   instance_id="8c64a633-0098-488a-bdce-1c03577f294b", started_at="2026-11-20T00:00:00Z")
+                    target = dict(started, recipient=public, started_sha256=keys.digest(keys.encoded(started)), success=True)
+                    offer = dict(target=target, registered=False)
+                    if capable:
+                        offer["filename_supported"] = True
+                    worker = mock.Mock()
+                    worker.poll.return_value = worker.wait.return_value = 0
+                    reader = mock.Mock(returncode=0)
+                    reader.poll.return_value = 0
+                    reader.communicate.side_effect = [(keys.encoded(offer), b""), (b"verified", b"")]
+                    patch(mock.patch.object(subprocess, "Popen", side_effect=[worker, reader, reader]))
+                    patch(mock.patch.object(keys, "verify_receipt", return_value=started))
+                    client.main()
+                    uploads = [call.args[3] for call in calls.call_args_list if len(call.args) == 4]
+                    self.assertEqual(len(uploads), 1)
+                    packet = json.loads(uploads[0])
+                    self.assertEqual(packet.get("filename"), name if capable and not restore else None)
+                    self.assertNotIn("filename", packet["request"])
 
     def test_enrollment_releases_ssh_output_even_if_remote_cancel_times_out(self):
         keys = self.client.keys

@@ -139,6 +139,23 @@ def site_state(project, instance, server_uuid, recipient):
     sync_directory(STATE)
 
 
+def record_desktop_filename(receipt, filename):
+    """A display hint for the verified daily key, never a destination path."""
+    keys.private_metadata(STATE, 0o700, directory=True)
+    label = {field: receipt[field] for field in ("project", "instance_id")}
+    label.update(recipient=receipt["backup_recipient"], filename=filename)
+    with tempfile.NamedTemporaryFile(dir=STATE, prefix=".key-label-", delete=False) as temp:
+        path = Path(temp.name)
+        try:
+            temp.write(keys.json_bytes(label))
+            temp.flush()
+            os.fsync(temp.fileno())
+            os.replace(path, STATE / "key-label.json")
+            sync_directory(STATE)
+        finally:
+            path.unlink(missing_ok=True)
+
+
 def receive(folder, project, instance, transport, target, tmp):
     limit = time.monotonic() + 180
     packet_path = keys.EXCHANGE / "packet.json"
@@ -147,8 +164,11 @@ def receive(folder, project, instance, transport, target, tmp):
                      "enrollment-cancelled-or-timed-out")
         time.sleep(0.25)
     packet = keys.parse_json(keys.read_public(packet_path, 32768))
-    keys.require(isinstance(packet, dict) and set(packet) == {"request", "ciphertext_b64"},
+    keys.require(isinstance(packet, dict) and set(packet) in ({"request", "ciphertext_b64"}, {"request", "ciphertext_b64", "filename"}),
                  "invalid-enrollment-packet")
+    if "filename" in packet:
+        from maintenance_enrollment_protocol import valid_filename
+        keys.require(folder == keys.IDENTITY and valid_filename(packet["filename"]), "invalid-enrollment-filename")
     request = packet["request"]
     keys.validate_import_request(request, target)
     cipher = base64.b64decode(packet["ciphertext_b64"], validate=True)
@@ -172,7 +192,10 @@ def receive(folder, project, instance, transport, target, tmp):
     sync_directory(staging)
     staging.rename(folder / ".pending")
     sync_directory(folder)
-    return committed(folder, project, instance)
+    receipt = committed(folder, project, instance)
+    if "filename" in packet:
+        record_desktop_filename(receipt, packet["filename"])
+    return receipt
 
 
 def enroll(restore):
@@ -203,7 +226,10 @@ def enroll(restore):
             tmp = Path(scratch)
             receipt = committed(folder, project, instance)
             transport, target = transport_target(project, instance, tmp, restore)
-            publish("target.json", {"target": target, "registered": bool(receipt)})
+            offer = {"target": target, "registered": bool(receipt)}
+            if not restore:
+                offer["filename_supported"] = True
+            publish("target.json", offer)
             if not receipt:
                 if not restore:
                     keys.require(not (STATE / "site.json").exists(), "missing-bound-private-copy")
