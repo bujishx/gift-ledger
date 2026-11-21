@@ -17,10 +17,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from datetime import datetime
+import json
+from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
+from hashlib import sha256
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -35,17 +37,25 @@ from app.db.models import (
     RelationshipType,
     User,
 )
+from app.db.registration import personal_restore_receipts
 from app.services.contact_identity import contact_identity_hash
 from app.services.event_dates import date_value, event_date_fields
 from app.services.event_identity import event_identity_hash
 from app.services.personal_backup import (
+    DEFAULT_PERSONAL_LIMITS,
     ERROR_EVENT_DUPLICATE,
+    ERROR_FILE_TOO_LARGE,
+    ERROR_RECORD_LIMIT,
+    ERROR_ZIP_COMPRESSION_RATIO,
+    ERROR_ZIP_ENTRY_TOO_LARGE,
+    ERROR_ZIP_TOTAL_TOO_LARGE,
     BackupCounts,
     BackupDictionaryEntry,
     BackupDictionaryNameConflict,
     BackupDictionaryRef,
     ParsedPersonalBackup,
     PersonalBackupError,
+    PersonalBackupLimits,
     build_personal_backup,
     parse_personal_backup,
 )
@@ -82,6 +92,14 @@ class PersonalRestoreError(ValueError):
 
 def _backup_validation_message(error: PersonalBackupError) -> str:
     # 唯一性冲突只包含受控提示和数字编号，可明确告知用户；其他解析错误仍统一脱敏。
+    if error.code in {
+        ERROR_FILE_TOO_LARGE,
+        ERROR_RECORD_LIMIT,
+        ERROR_ZIP_ENTRY_TOO_LARGE,
+        ERROR_ZIP_TOTAL_TOO_LARGE,
+        ERROR_ZIP_COMPRESSION_RATIO,
+    }:
+        return error.message + " 请保留原件，参阅《从备份恢复》的历史大账本迁移说明。"
     if error.code == ERROR_EVENT_DUPLICATE:
         return error.message
     return "备份文件无法解析或校验失败，请使用系统生成的原版备份文件"
@@ -93,6 +111,7 @@ class PersonalRestoreAnalysis:
 
     current: BackupCounts
     incoming: BackupCounts
+    ledger_revision: str
     format_version: int
     application_version: str
     created_at: datetime
@@ -240,30 +259,71 @@ def _verify_system_dictionaries(
 # ---------------------------------------------------------------- 只读恢复分析
 
 
-def _count_current(session: Session, user_id: int) -> BackupCounts:
-    return BackupCounts(
-        relationship_types=_count_model(session, RelationshipType, user_id),
-        kinship_types=_count_model(session, KinshipType, user_id),
-        event_types=_count_model(session, EventType, user_id),
-        contacts=_count_model(session, Contact, user_id),
-        events=_count_model(session, EventRecord, user_id),
-        gifts=_count_model(session, GiftRecord, user_id),
+def _ledger_snapshot(session: Session, user_id: int) -> tuple[str, BackupCounts]:
+    """Hash each owned row in primary-key order, including rows removed by restore."""
+    digest = sha256()
+    counts = {}
+    for key, model in (
+        ("relationship_types", RelationshipType),
+        ("kinship_types", KinshipType),
+        ("event_types", EventType),
+        ("contacts", Contact),
+        ("events", EventRecord),
+        ("gifts", GiftRecord),
+        ("import_batches", LegacyImportBatch),
+    ):
+        digest.update(key.encode() + b"\n")
+        statement = select(model.__table__).where(model.user_id == user_id).order_by(model.id)
+        count = 0
+        for row in session.execute(statement.execution_options(yield_per=256)):
+            digest.update(
+                json.dumps(
+                    tuple(row), default=str, ensure_ascii=False, separators=(",", ":")
+                ).encode()
+                + b"\n"
+            )
+            count += 1
+        if key != "import_batches":
+            counts[key] = count
+    return digest.hexdigest(), BackupCounts(**counts)
+
+
+def _account_key(user: User) -> str:
+    identity = [user.id, user.username, user.created_at.isoformat()]
+    return sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
+
+
+def recent_restore_receipts(session: Session, user: User, before: int | None = None) -> list[dict]:
+    t = personal_restore_receipts.c
+    statement = select(t.id, t.safety_token, t.restored_at, t.expires_at, t.counts).where(
+        t.user_id == user.id, t.account_key == _account_key(user)
     )
-
-
-def _count_model(session: Session, model: type[object], user_id: int) -> int:
-    count = session.scalar(select(func.count()).select_from(model).where(model.user_id == user_id))
-    return int(count or 0)
+    if before is not None:
+        statement = statement.where(t.id < before)
+    rows = session.execute(statement.order_by(t.id.desc()).limit(20))
+    now = datetime.now(UTC)
+    return [
+        {
+            "receipt_id": row.id,
+            "restored_at": datetime.fromtimestamp(row.restored_at, UTC),
+            "safety_backup_expires_at": datetime.fromtimestamp(row.expires_at, UTC),
+            "safety_backup_token": row.safety_token if row.expires_at > now.timestamp() else None,
+            "counts": json.loads(row.counts),
+        }
+        for row in rows
+    ]
 
 
 def analyze_personal_restore(
     session: Session,
     user_id: int,
     content: bytes,
+    *,
+    limits: PersonalBackupLimits = DEFAULT_PERSONAL_LIMITS,
 ) -> PersonalRestoreAnalysis:
     """只读分析个人备份，返回不可变预览结果，不写数据库、不创建安全备份。"""
     try:
-        parsed = parse_personal_backup(content)
+        parsed = parse_personal_backup(content, **asdict(limits))
     except PersonalBackupError as error:
         raise PersonalRestoreError(
             ERROR_BACKUP_INVALID, _backup_validation_message(error)
@@ -275,8 +335,10 @@ def analyze_personal_restore(
 
     _verify_system_dictionaries(session, parsed)
 
+    ledger_revision, current = _ledger_snapshot(session, user_id)
     return PersonalRestoreAnalysis(
-        current=_count_current(session, user_id),
+        current=current,
+        ledger_revision=ledger_revision,
         incoming=BackupCounts(
             relationship_types=len(parsed.relationship_types),
             kinship_types=len(parsed.kinship_types),
@@ -423,30 +485,52 @@ def _restore_ledger(
         session.flush()
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class VerifiedRestorePassword:
+    user_id: int
+    previous_hash: str
+    replacement_hash: str
+
+
+def verify_restore_password(user: User, password: str) -> VerifiedRestorePassword:
+    if not verify_password(password, user.password_hash):
+        raise PersonalRestoreError(ERROR_PASSWORD_INCORRECT, "密码不正确，无法恢复")
+    return VerifiedRestorePassword(user.id, user.password_hash, hash_password(password))
+
+
 def replace_personal_ledger(
     session: Session,
     user_id: int,
     content: bytes,
     *,
-    password: str,
+    credential: VerifiedRestorePassword,
+    expected_revision: str,
     safety_backup_store: PersonalSafetyBackupStore,
     application_version: str,
+    limits: PersonalBackupLimits = DEFAULT_PERSONAL_LIMITS,
     dictionary_renames: tuple[PersonalRestoreDictionaryRename, ...] = (),
 ) -> PersonalRestoreResult:
     """替换恢复当前用户账本，全部步骤在一个事务内完成，只在最后提交一次。"""
     try:
+        # Release any older consistent-read snapshot before acquiring the ledger write lock.
+        session.rollback()
         # 1. 锁定当前账号。
         user = session.scalar(select(User).where(User.id == user_id).with_for_update())
         if user is None or user.is_active != 1:
             raise PersonalRestoreError(ERROR_ACCOUNT_UNAVAILABLE, "账号不可用，请重新登录")
 
-        # 2. 校验当前密码。
-        if not verify_password(password, user.password_hash):
-            raise PersonalRestoreError(ERROR_PASSWORD_INCORRECT, "密码不正确，无法恢复")
+        # Authentication ran under the shared password budget; recheck its binding under lock.
+        if credential.user_id != user_id or credential.previous_hash != user.password_hash:
+            raise PersonalRestoreError(ERROR_ACCOUNT_UNAVAILABLE, "账号登录状态已变化，请重新登录")
+
+        if _ledger_snapshot(session, user_id)[0] != expected_revision:
+            raise PersonalRestoreError(
+                ERROR_RESTORE_STATE_CHANGED, "预览后当前账本已变化，请重新预览并核对替换范围"
+            )
 
         # 3. 重新严格解析原始字节，不信任预览阶段对象或编号。
         try:
-            parsed = parse_personal_backup(content)
+            parsed = parse_personal_backup(content, **asdict(limits))
         except PersonalBackupError as error:
             raise PersonalRestoreError(
                 ERROR_BACKUP_INVALID, _backup_validation_message(error)
@@ -459,12 +543,17 @@ def replace_personal_ledger(
         # 5. 删除任何数据前生成并保存恢复前安全备份。
         try:
             safety = build_personal_backup(
-                session, user_id, application_version=application_version
+                session, user_id, application_version=application_version, limits=limits
             )
             safety_token, safety_expires_at = safety_backup_store.save(
                 user_id=user_id, content=safety.content
             )
-        except (PersonalBackupError, PersonalSafetyBackupStoreError):
+        except PersonalBackupError as error:
+            raise PersonalRestoreError(
+                ERROR_SAFETY_BACKUP_FAILED,
+                "当前账本的安全备份未通过恢复校验，已取消替换。" + error.message,
+            ) from None
+        except PersonalSafetyBackupStoreError:
             raise PersonalRestoreError(
                 ERROR_SAFETY_BACKUP_FAILED, "无法生成或保存恢复前安全备份，恢复已取消"
             ) from None
@@ -476,9 +565,27 @@ def replace_personal_ledger(
         _restore_ledger(session, user_id, parsed, system_ids)
 
         # 10. 用同一明文密码重新哈希，使既有 JWT 失效。
-        user.password_hash = hash_password(password)
+        user.password_hash = credential.replacement_hash
 
-        # 11. 全流程只在最后提交一次。
+        counts = BackupCounts(
+            relationship_types=len(parsed.relationship_types),
+            kinship_types=len(parsed.kinship_types),
+            event_types=len(parsed.event_types),
+            contacts=len(parsed.contacts),
+            events=len(parsed.events),
+            gifts=len(parsed.gifts),
+        )
+        session.execute(
+            personal_restore_receipts.insert().values(
+                user_id=user_id,
+                account_key=_account_key(user),
+                safety_token=safety_token,
+                restored_at=int(datetime.now(UTC).timestamp()),
+                expires_at=int(safety_expires_at.timestamp()),
+                counts=json.dumps(asdict(counts), separators=(",", ":")),
+            )
+        )
+        # 11. 回执、密码轮换与账本替换同一事务提交。
         session.commit()
     except PersonalRestoreError:
         session.rollback()
@@ -493,14 +600,7 @@ def replace_personal_ledger(
         raise PersonalRestoreError(ERROR_RESTORE_FAILED, "恢复失败，请稍后重试") from None
 
     return PersonalRestoreResult(
-        counts=BackupCounts(
-            relationship_types=len(parsed.relationship_types),
-            kinship_types=len(parsed.kinship_types),
-            event_types=len(parsed.event_types),
-            contacts=len(parsed.contacts),
-            events=len(parsed.events),
-            gifts=len(parsed.gifts),
-        ),
+        counts=counts,
         safety_backup_token=safety_token,
         safety_backup_expires_at=safety_expires_at,
         reauth_required=True,

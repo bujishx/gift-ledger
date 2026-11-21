@@ -35,6 +35,9 @@ class Job:
         self.name = profile["project"] + "-restore-" + self.op
         self.folder = ops.mkdir(Path(profile.get("state_dir", site.STATE)) / "restores" / self.op)
         self.mounts = site.worker_mounts(profile, self.folder, record["identity_role"])
+        # A read-only bind of MySQL's identity file exposes the data filesystem's
+        # free space even when the owner placed the database on a separate volume.
+        self.mounts["/work/mysql-storage-info"] = site.mount("bind", Path(profile["station"]) / "data/mysql_data/auto.cnf", False)
         self.mounts["/work/source"] = site.mount("bind", Path(profile["station"]) / "restore-input" / record["backup_id"], False)
 
     def owned(self, worker_id):
@@ -57,9 +60,9 @@ class Job:
             d.call("rm", old[0])
         args = ["create", "--name", self.name, "--label", "com.docker.compose.project=" + p["project"],
                 "--label", "org.gift-ledger.backup-session=" + self.op, "--pull", "never", "--network", "none",
-                "--read-only", "--memory", "768m", "--restart", "no", "--user", "0:0", "--cap-drop", "ALL",
+                "--read-only", *ops.private_worker_resources(), "--restart", "no", "--user", "0:0", "--cap-drop", "ALL",
                 "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE",
-                "--security-opt", "no-new-privileges:true", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=128m",
+                "--security-opt", "no-new-privileges:true",
                 "--tmpfs", "/var/lib/mysql:rw,noexec,nosuid,nodev,size=16m", "--log-driver", "none"]
         for name in ("GIFTLEDGER_PROJECT", "GIFTLEDGER_SITE_IP", "GIFTLEDGER_HTTPS_PORT"):
             args.extend(["--env", name + "=" + os.environ[name]])

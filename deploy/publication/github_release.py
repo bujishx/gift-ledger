@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 
-from images import NETWORK_ASSET, RELEASE_TAG, has_network_guide, has_windows_tools
+from images import NETWORK_ASSET, RELEASE_TAG, ROOT, has_network_guide, has_windows_tools, selected_file
 
 EXPECTED = {
     NETWORK_ASSET,
@@ -93,11 +93,15 @@ def deliver(service, version, commit, folder):
     if set(files) != expected or len(list(folder.iterdir())) != len(expected):
         raise ValueError("Unexpected release assets")
     base = f"https://github.com/{service.repository}/releases/download/{version}/"
+    body = f"Linux/amd64 · Docker Compose / Synology Container Manager. [安装]({base}Install.zh.md) · [Install]({base}Install.en.md)"
+    notes = Path("deploy/publication/notes") / f"{version}.md"
+    if (ROOT / notes).is_file():
+        body += "\n\n" + selected_file(notes).decode("utf-8").strip()
     metadata = {
         "tag_name": version,
         "target_commitish": commit,
         "name": version,
-        "body": f"Linux/amd64 · Docker Compose / Synology Container Manager. [安装]({base}Install.zh.md) · [Install]({base}Install.en.md)",
+        "body": body,
     }
     matches = service.releases(version)
     if len(matches) > 1:

@@ -90,7 +90,15 @@ function show(data) {
     lines.push("登录本站核对原账。今后从本站备份，可选择“上传旧钥匙登记”或“生成新钥匙登记”。");
     clearFiles();
   }
-  if (["failed","needs_review"].includes(data.state) && data.code) lines.push("原因 " + data.code);
+  if (["failed","needs_review"].includes(data.state) && data.code) {
+    const capacity = {
+      restore_private_workspace_too_small: "恢复所需的私密工作内存不足。请在内存较空闲时重试，或使用内存更大的独立空站。",
+      maintenance_memory_headroom_low: "可用内存不足。请在内存较空闲时重试，或使用内存更大的独立空站。",
+      maintenance_memory_unavailable: "无法读取目标站服务器的可用内存，请先检查服务器状态。",
+      restore_destination_space_low: "目标站数据卷的可用空间不足。请腾出空间，或选择容量更大的独立空站。",
+    };
+    lines.push(capacity[data.code] || "原因 " + data.code);
+  }
   if (data.operation_id) lines.push("恢复任务 " + data.operation_id);
   el("feedback").textContent = lines.join("\n");
   displayControls();

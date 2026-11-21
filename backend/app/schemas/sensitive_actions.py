@@ -6,7 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from app.schemas.exports import QueryExportFilters
 
 SensitiveActionPurpose = Literal[
-    "export_all", "export_query", "personal_backup", "safety_backup", "legacy_import"
+    "export_all", "export_query", "personal_backup", "safety_backup",
+    "restore_receipts", "legacy_import",
 ]
 
 

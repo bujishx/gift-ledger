@@ -46,6 +46,30 @@ invitations = Table(
 )
 
 
+business_sessions = Table(
+    "business_sessions",
+    metadata,
+    Column("token_hash", String(64), primary_key=True),
+    Column("user_id", Integer, nullable=False, index=True),
+    Column("expires_at", BigInteger, nullable=False, index=True),
+    mysql_engine="InnoDB",
+)
+
+
+# Operational receipts commit in the same InnoDB transaction as the ledger replacement.
+personal_restore_receipts = Table(
+    "personal_restore_receipts", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("user_id", Integer, nullable=False, index=True),
+    Column("account_key", String(64), nullable=False),
+    Column("safety_token", String(43), nullable=False),
+    Column("restored_at", BigInteger, nullable=False),
+    Column("expires_at", BigInteger, nullable=False),
+    Column("counts", String(256), nullable=False),
+    mysql_engine="InnoDB",
+)
+
+
 def seed_policy(connection, legacy_open: bool) -> None:
     values = {
         "id": 1,
@@ -67,10 +91,8 @@ def provision(root_engine, legacy_open: bool) -> None:
     with root_engine.begin() as connection:
         if DATABASE in inspect(connection).get_schema_names():
             tables = set(inspect(connection).get_table_names(schema=DATABASE))
-            if tables - {"policy", "invitations"}:
+            if tables - {table.name for table in metadata.tables.values()}:
                 raise ValueError("unexpected_registration_tables")
-            if tables == {"policy", "invitations"} and connection.scalar(select(policy.c.id)) == 1:
-                return
         connection.exec_driver_sql(
             "CREATE DATABASE IF NOT EXISTS gift_ledger_registration "
             "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"
@@ -84,6 +106,14 @@ def provision(root_engine, legacy_open: bool) -> None:
             "GRANT SELECT, INSERT, UPDATE ON gift_ledger_registration.invitations "
             "TO 'gift_ledger_app'@%s",
             ("%",),
+        )
+        connection.exec_driver_sql(
+            "GRANT SELECT, INSERT, DELETE ON gift_ledger_registration.business_sessions "
+            "TO 'gift_ledger_app'@%s", ("%",),
+        )
+        connection.exec_driver_sql(
+            "GRANT SELECT, INSERT ON gift_ledger_registration.personal_restore_receipts "
+            "TO 'gift_ledger_app'@%s", ("%",),
         )
         # MySQL DDL auto-commits; this last marker makes an interrupted setup retryable.
         seed_policy(connection, legacy_open)

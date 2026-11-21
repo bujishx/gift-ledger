@@ -11,6 +11,7 @@ from app.core.security import (
     verify_unknown_user_password,
 )
 from app.db.models import Contact, RelationshipType, User
+from app.services.business_sessions import active_session_exists
 from app.services.system_dictionary_catalog import SELF_RELATIONSHIP_SYSTEM_CODE
 
 
@@ -31,7 +32,6 @@ def insert_user(
 ) -> User:
     normalized_username = normalize_username(username)
     validate_new_password(password)
-    password_hash = hash_password(password)
 
     try:
         existing_id = session.scalar(select(User.id).where(User.username == normalized_username))
@@ -40,7 +40,7 @@ def insert_user(
 
         user = User(
             username=normalized_username,
-            password_hash=password_hash,
+            password_hash=hash_password(password),
             is_admin=int(is_admin),
             is_active=1,
         )
@@ -68,7 +68,9 @@ def authenticate_user(session: Session, username: str, password: str) -> User:
         verify_unknown_user_password(password)
         raise AuthenticationFailedError from exc
 
-    user = session.scalar(select(User).where(User.username == normalized_username))
+    user = session.scalar(
+        select(User).where(User.username == normalized_username).with_for_update(read=True)
+    )
     if user is None:
         verify_unknown_user_password(password)
         raise AuthenticationFailedError
@@ -77,8 +79,13 @@ def authenticate_user(session: Session, username: str, password: str) -> User:
     return user
 
 
-def get_active_user(session: Session, user_id: int) -> User | None:
-    return session.scalar(select(User).where(User.id == user_id, User.is_active == 1))
+def get_active_user(
+    session: Session, user_id: int, *, session_id: str | None = None
+) -> User | None:
+    query = select(User).where(User.id == user_id, User.is_active == 1)
+    if session_id is not None:
+        query = query.where(active_session_exists(user_id, session_id))
+    return session.scalar(query)
 
 
 def get_self_name(session: Session, user_id: int) -> str | None:

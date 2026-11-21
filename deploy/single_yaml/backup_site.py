@@ -1,6 +1,7 @@
 """One-off host coordinator for a single-YAML site. No private key mounts."""
 
 import csv
+from contextlib import contextmanager
 import io
 import json
 import os
@@ -306,9 +307,8 @@ class SiteBindings:
                 ops.require(labels.get("org.gift-ledger.gui-v2-project") == self.project
                             and labels.get("org.gift-ledger.gui-v2-role") == role, "backup_key_volume_mismatch")
 
-    def profile(self):
-        state, store = self.directories()
-        ops.backup_store._store(store)  # reject a foreign output directory before stopping applications
+    def registration(self):
+        state, _ = self.directories()
         path = state / "site.json"
         ops.require(path.exists(), "backup_key_registration_required")
         ops.no_links(path)
@@ -322,6 +322,12 @@ class SiteBindings:
                     "backup_registration_invalid")
         for key in ("instance_id", "server_uuid"):
             ops.require(str(UUID(record[key])) == record[key], "backup_registration_invalid")
+        return record
+
+    def profile(self):
+        record = self.registration()
+        _, store = self.directories()
+        ops.backup_store._store(store)
         return {**self.runtime_profile(), "instance_id": record["instance_id"], "server_uuid": record["server_uuid"],
                 "recipient": record["backup_recipient"], "preview_policy": "fixed-window"}
 
@@ -347,7 +353,9 @@ def backup():
     single_yaml_site.project_host(project)
     docker = ops.Docker("/usr/bin/docker", "unix:///var/run/docker.sock")
     site = SiteBindings(docker, project)
-    report_backup(run_backup(site, site.profile(), docker, Worker))
+    with observe_backup_attempt(site):
+        profile = site.profile()
+    report_backup(run_backup(site, profile, docker, Worker))
 
 
 def candidate_profile(site, profile, operation):
@@ -362,7 +370,47 @@ def candidate_profile(site, profile, operation):
     return dict(profile, recipient=row["recipient"], key_change_session=trial, key_change_operation=operation)
 
 
+@contextmanager
+def observe_backup_attempt(site, expected_instance=None):
+    """Record only a real backup attempt with a verified, private site binding."""
+    started = ops.utcnow().isoformat()
+    try:
+        yield
+    except Exception as exc:
+        # Another owner of the coordinator is responsible for its own outcome.
+        if getattr(exc, "code", None) != "another_run_is_active":
+            try:
+                identity = site.registration()
+                state, _ = site.directories()
+                if expected_instance is None or identity["instance_id"] == expected_instance:
+                    # Re-check after acquiring the nonblocking lock. A refusal while the
+                    # real operation is still running should never trigger an alert.
+                    with ops.host_lock(state):
+                        if site.registration() == identity:
+                            write_failed_attempt(state, identity, started)
+            except (OSError, ValueError, RuntimeError, KeyError, TypeError):
+                # Failed proof, unavailable storage or concurrent work. Preserve the original error.
+                pass
+        raise
+
+
+def write_failed_attempt(state, identity, started):
+    binding = {key: identity[key] for key in ("project", "instance_id", "server_uuid")}
+    path = state / "last-failed-backup-attempt.json"
+    if path.exists():
+        previous = ops.read_json(path)
+        if all(previous.get(key) == value for key, value in binding.items()):
+            if previous.get("attempted_at", "") >= started:
+                return
+    ops.save_json(path, dict(binding, attempted_at=started))
+
+
 def run_backup(site, profile, docker, worker_factory, *, engine_session=None, recover=False):
+    with observe_backup_attempt(site, profile["instance_id"]):
+        return _run_backup(site, profile, docker, worker_factory, engine_session, recover)
+
+
+def _run_backup(site, profile, docker, worker_factory, engine_session, recover):
     state, store = site.directories()
     pending = [row for _, row in ops.run_records(state)
                if row["stage"] not in ("finished", "preflight-failed") or row.get("private_cleanup_pending")]

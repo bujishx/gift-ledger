@@ -67,6 +67,8 @@ def _translate_ledger_error(exc: Exception) -> ApiError:
                 exc.message,
                 {"WWW-Authenticate": "Cookie"},
             )
+        if exc.code == "LEDGER_REVISION_CONFLICT":
+            return ApiError(status.HTTP_409_CONFLICT, exc.code, exc.message)
         if exc.code == "SELF_CONTACT_REQUIRED":
             return ApiError(status.HTTP_403_FORBIDDEN, exc.code, exc.message)
         return ApiError(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.code, exc.message)
@@ -328,7 +330,8 @@ def correct_event(
             event_type_id=payload.event_type_id,
             event_date=payload.event_date,
             remark=payload.remark,
-            fields=payload.model_fields_set,
+            fields=payload.model_fields_set - {"expected_revision"},
+            expected_revision=payload.expected_revision,
         )
     except (
         EventHasGiftsError,
@@ -399,7 +402,8 @@ def correct_gift(
             amount=payload.amount,
             gift_details=payload.gift_details,
             remark=payload.remark,
-            fields=payload.model_fields_set,
+            fields=payload.model_fields_set - {"expected_revision"},
+            expected_revision=payload.expected_revision,
         )
     except (GiftAlreadyExistsError, GiftNotFoundError, LedgerValidationError) as exc:
         raise _translate_ledger_error(exc) from exc

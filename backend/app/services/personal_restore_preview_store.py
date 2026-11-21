@@ -38,6 +38,7 @@ _METADATA_KEYS = {
     "user_id",
     "created_at",
     "expires_at",
+    "ledger_revision",
     "byte_length",
     "sha256",
 }
@@ -70,6 +71,7 @@ class StoredPersonalRestorePreview:
     user_id: int
     content: bytes
     expires_at: datetime
+    ledger_revision: str
     claimed_path: Path
     content_path: Path
 
@@ -172,6 +174,7 @@ class PersonalRestorePreviewStore:
         *,
         user_id: int,
         content: bytes,
+        ledger_revision: str,
         now: datetime | None = None,
     ) -> tuple[str, datetime]:
         """保存原始上传字节，返回 ``(token, expires_at)``。"""
@@ -180,7 +183,8 @@ class PersonalRestorePreviewStore:
         self.cleanup_expired(now=current)
         expires_at = current + self.ttl
         payload = {
-            "version": 1,
+            "version": 2,
+            "ledger_revision": ledger_revision,
             "token": None,
             "user_id": user_id,
             "created_at": current.isoformat(),
@@ -255,7 +259,12 @@ class PersonalRestorePreviewStore:
             payload: Any = json.loads(metadata_path.read_text(encoding="utf-8"))
             if type(payload) is not dict or set(payload) != _METADATA_KEYS:
                 raise ValueError("metadata mismatch")
-            if payload["version"] != 1 or payload["token"] != token:
+            if (
+                payload["version"] != 2
+                or payload["token"] != token
+                or not isinstance(payload["ledger_revision"], str)
+                or not _SHA256_PATTERN.fullmatch(payload["ledger_revision"])
+            ):
                 raise ValueError("metadata mismatch")
             if type(payload["user_id"]) is not int or payload["user_id"] <= 0:
                 raise ValueError("metadata mismatch")
@@ -314,6 +323,7 @@ class PersonalRestorePreviewStore:
             user_id=user_id,
             content=content,
             expires_at=expires_at,
+            ledger_revision=payload["ledger_revision"],
             claimed_path=claimed_path,
             content_path=content_path,
         )

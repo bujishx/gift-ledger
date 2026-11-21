@@ -153,7 +153,14 @@ async function readOrStartBackup(backup, initial = false) {
         lines.push("服务器未能生成下载 ZIP。可以在站点目录的 backups/artifacts/ 下复制本次编号的整份备份。");
       }
     }
-    if (data.code) lines.push("原因 " + data.code);
+    const capacity = {
+      backup_private_workspace_too_small: "本机可用于私密备份的内存不足。请在内存较空闲时重试，或增加内存。",
+      maintenance_memory_headroom_low: "可用内存不足，服务器已为记账和数据库保留空间。请在内存较空闲时重试。",
+      maintenance_memory_unavailable: "无法读取服务器可用内存，请先检查服务器状态。",
+      backup_destination_space_low: "备份所在存储卷的可用空间不足。请先腾出空间，再提交备份。",
+      insufficient_disk_space: "备份所在存储卷的可用空间不足。请先腾出空间，再提交备份。",
+    };
+    if (data.code) lines.push(capacity[data.code] || "原因 " + data.code);
     result.textContent = lines.join("\n");
   } catch {
     if (!controller.signal.aborted)

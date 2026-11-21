@@ -43,7 +43,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description="往来有礼人情往来管理系统后端接口。",
     )
     application.state.settings = app_settings
-    application.state.registration_limits = FailureLimiter()
+    application.state.registration_limits = FailureLimiter(
+        login_directory=os.environ.get("GIFTLEDGER_LOGIN_LOCK_DIR")
+    )
     application.state.gift_change_reauth_store = GiftChangeReauthStore()
     application.state.sensitive_action_store = SensitiveActionStore()
     application.add_middleware(

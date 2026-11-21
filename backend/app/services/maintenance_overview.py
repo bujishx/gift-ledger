@@ -115,6 +115,17 @@ def overview(db: Session, owner: OwnerSessions, root: Path):
         value = host.get(name)
         return value if type(value) is int and value >= 0 else None
 
+    health = host.get("backup_health")
+    warnings = {"failed", "overdue", "never", "unknown"}
+    if (not isinstance(health, dict) or type(health.get("days")) is not int or not 1 <= health["days"] <= 365
+            or not isinstance(health.get("issues"), list)
+            or not all(isinstance(item, str) and item in warnings for item in health["issues"])):
+        health = {"days": None, "last_verified_at": None, "issues": ["unknown"]}
+    else:
+        last_verified = timestamp(health.get("last_verified_at"))
+        health = {"days": health["days"], "last_verified_at": iso(last_verified) if last_verified else None,
+                  "issues": list(dict.fromkeys(health["issues"]))}
+
     return {
         "project": owner.binding[0],
         "instance": owner.binding[1],
@@ -126,6 +137,7 @@ def overview(db: Session, owner: OwnerSessions, root: Path):
             "database": "ok" if database_ok else "unavailable",
         },
         "database": {"version": version, "schema_revision": revision},
+        "backup_health": health,
         "totals": totals,
         "backup": {
             "state": state,
@@ -151,6 +163,8 @@ def include_web_task(value: dict, root: Path, task: dict) -> None:
     """Include queued work and failures that occurred before the backup engine could start."""
     state = task["state"]
     if state in ("queued", "running", "needs_review"):
+        if state == "needs_review" and "backup_health" in value and "failed" not in value["backup_health"]["issues"]:
+            value["backup_health"]["issues"].insert(0, "failed")
         value["backup"] = {
             "state": state,
             "checked_at": None,
@@ -172,6 +186,11 @@ def include_web_task(value: dict, root: Path, task: dict) -> None:
             or (previous and seen < previous)
         ):
             return
+        health = value.get("backup_health")
+        if health is not None and state == "failed":
+            success = timestamp(health.get("last_verified_at"))
+            if (not success or seen >= success) and "failed" not in health["issues"]:
+                health["issues"].insert(0, "failed")
         value["backup"] = {
             "state": state,
             "checked_at": iso(seen),

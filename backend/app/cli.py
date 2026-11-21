@@ -12,6 +12,7 @@ from app.core.config import Settings
 from app.core.security import PasswordPolicyError, UsernamePolicyError
 from app.db.session import get_session_factory
 from app.services.auth import UsernameAlreadyExistsError
+from app.services.registration_limits import LoginBusy
 from app.services.user_management import (
     UserNotFoundError,
     create_admin_user,
@@ -124,6 +125,9 @@ def execute_command(
         output_function("操作未执行：该用户名已存在。")
     except UserNotFoundError:
         output_function("操作未执行：找不到该账号。")
+    except LoginBusy:
+        output_function("密码验证繁忙，请稍后重试。")
+        return EXIT_SYSTEM_ERROR
     except (EOFError, KeyboardInterrupt):
         output_function("操作已取消，数据库未修改。")
     return EXIT_INPUT_ERROR

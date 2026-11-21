@@ -168,6 +168,8 @@ html[data-theme="dark"] ::selection { background:#426da2; color:#fff; }
 .site-about-rows > div { display:grid; grid-template-columns:minmax(6.25rem,auto) minmax(0,1fr); gap:12px; padding:9px 0; border-bottom:1px solid var(--ui-border,#dbe3ee); align-items:center; }
 .site-about-rows dt { color:var(--ui-muted,#526781); font-size:.9rem; }
 .site-about-rows dd { margin:0; text-align:right; overflow-wrap:anywhere; font-weight:600; }
+.site-about-repository { color:var(--ui-primary,#1056ba); text-decoration:underline; text-underline-offset:3px; }
+.site-about-repository svg { width:.9em; height:.9em; margin-inline-start:.4em; vertical-align:-.08em; }
 .site-about-copy { display:inline-flex; align-items:center; justify-content:flex-end; gap:8px; margin:-5px 0; padding:7px 2px; min-height:36px; border:0; background:transparent; color:var(--ui-primary,#1056ba); font:600 .94rem ui-monospace,monospace; cursor:pointer; }
 .site-about-copy svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.8; }
 .site-about-note { margin:12px 0; padding:12px; line-height:1.55; background:var(--ui-primary-soft,#edf4ff); border-radius:12px; }

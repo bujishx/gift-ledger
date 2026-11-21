@@ -611,6 +611,8 @@ class Session:
         self._check_keys()
         if not args.recover:
             self._ready_status()
+            self.m.require_tmpfs(self.tmp_parent)
+            self.m.backup_capacity(self.tmp_parent, self.context)
         self._history()
         self.lease = self._open_lease()
         self.context = self._context()

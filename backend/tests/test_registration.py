@@ -1,3 +1,4 @@
+import socket
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
@@ -168,8 +169,15 @@ def test_limiter_counts_failures_only_and_releases_after_window():
         pass
 
 
-def test_login_and_invitation_rate_limit_http(site_access):
-    with site_access.client() as client:
+def test_login_and_invitation_rate_limit_http(site_access, monkeypatch):
+    monkeypatch.setenv("GIFTLEDGER_AUTH_GATEWAY", "web")
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("192.0.2.10", 0))],
+    )
+    with site_access.client(peer="192.0.2.10") as client:
+        client.headers["X-GiftLedger-Client-IP"] = "192.0.2.51"
         for _ in range(8):
             response = client.post(
                 PUBLIC + AUTH + "/login",
@@ -189,3 +197,90 @@ def test_login_and_invitation_rate_limit_http(site_access):
         denied = signup(client, "one_more", code="wrong")
         assert denied.status_code == 429 and int(denied.headers["Retry-After"]) > 0
         assert denied.json()["error"]["code"] == "INVITE_RATE_LIMITED"
+        client.headers["X-GiftLedger-Client-IP"] = "192.0.2.52"
+        assert signup(client, "another_source", code="wrong").status_code == 403
+        assert {
+            entry.peer for entry in client.app.state.registration_limits.attempts["invite"]
+        } == {"192.0.2.51", "192.0.2.52"}
+
+
+def test_busy_login_is_shared_across_entries_and_workers_without_charging_failures(
+    site_access, tmp_path, monkeypatch
+):
+    shared = tmp_path / "site-app-data"
+    shared.mkdir()
+    monkeypatch.setenv("GIFTLEDGER_LOGIN_LOCK_DIR", str(shared))
+    site_access.seed()
+    payload = {"username": "ledger_user", "password": site_access.old_password}
+    with site_access.client() as first, site_access.client() as second:
+        with first.app.state.registration_limits.password_check():
+            for client, origin in ((first, ORIGIN), (second, PUBLIC)):
+                busy = client.post(
+                    origin + AUTH + "/login", json=payload, headers={"Origin": origin}
+                )
+                assert busy.status_code == 429 and busy.headers["Retry-After"] == "1"
+                assert busy.json()["error"]["code"] == "LOGIN_BUSY"
+                assert not client.app.state.registration_limits.attempts["login"]
+            assert second.get(PUBLIC + AUTH + "/registration").status_code == 200
+        assert (
+            second.post(
+                PUBLIC + AUTH + "/login", json=payload, headers={"Origin": PUBLIC}
+            ).status_code
+            == 200
+        )
+    assert not list(shared.iterdir())
+
+
+def test_missing_proxy_identity_uses_account_and_site_limits_only():
+    limiter = FailureLimiter()
+    for number in range(240):
+        with pytest.raises(ValueError), limiter.attempt("login", None, f"user{number}", ValueError):
+            raise ValueError
+    with pytest.raises(AttemptLimitReached), limiter.attempt("login", None, "another", ValueError):
+        pass
+
+
+def test_web_peer_verification_precedes_public_credentials(site_access, monkeypatch):
+    monkeypatch.setenv("GIFTLEDGER_AUTH_GATEWAY", "web")
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("192.0.2.10", 0))],
+    )
+    site_access.seed()
+    payload = {"username": "ledger_user", "password": site_access.old_password}
+    with (
+        site_access.client(peer="192.0.2.11") as other,
+        site_access.client(peer="192.0.2.10") as web,
+    ):
+        for client, forwarded in ((other, "site"), (web, "invalid")):
+            reply = client.post(
+                PUBLIC + AUTH + "/login",
+                json=payload,
+                headers={"Origin": PUBLIC, "X-GiftLedger-Client-IP": forwarded},
+            )
+            assert reply.status_code == 403
+        web.headers["X-GiftLedger-Client-IP"] = "site"
+        assert (
+            web.post(PUBLIC + AUTH + "/login", json=payload, headers={"Origin": PUBLIC}).status_code
+            == 200
+        )
+        assert (
+            other.post(
+                ORIGIN + AUTH + "/login", json=payload, headers={"Origin": ORIGIN}
+            ).status_code
+            == 200
+        )
+
+
+def test_shared_hash_slot_preserves_invitation_and_failure_counters(site_access):
+    site_access.seed()
+    with site_access.client() as client:
+        inv = client.post(BASE + "/invitations", json={}, headers=headers(site_access.verified()))
+        assert inv.status_code == 200
+        code = inv.json()["code"]
+        with client.app.state.registration_limits.password_check():
+            reply = signup(client, "new_member", code=code)
+            assert reply.status_code == 429
+            assert not client.app.state.registration_limits.attempts["invite"]
+        assert signup(client, "new_member", code=code).status_code == 201

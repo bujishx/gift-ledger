@@ -12,6 +12,16 @@
 .me-page .me-tabs button.selected {
   font-weight: 700;
 }
+.me-page .tab-strip.me-tabs button:disabled {
+  color: var(--ui-muted);
+  background: var(--ui-background);
+  border-color: var(--ui-border);
+  opacity: 0.85;
+}
+.me-tabs button small {
+  margin-inline-start: 0.35em;
+  white-space: nowrap;
+}
 .me-page .me-dict-tabs {
   margin-bottom: 12px;
 }

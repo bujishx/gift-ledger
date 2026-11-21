@@ -384,6 +384,17 @@ class Tests(unittest.TestCase):
         self.assertEqual(len(api.uploads), len(github_release.EXPECTED))
         self.assertEqual(api.uploads[: len(uploaded)], uploaded)
 
+    def test_release_publishes_notes_below_install_links(self):
+        version = "v1.8.2.6"
+        path = self.work / "release"
+        images.release_files(path, self.refs, "example/giftledger", version)
+        api = FakeGitHub()
+        github_release.deliver(api, version, self.commit, path)
+        notes = images.selected_file(f"deploy/publication/notes/{version}.md").decode().strip()
+        self.assertIn(f"{version}/Install.en.md)\n\n" + notes, api.r["body"])
+        github_release.deliver(api, version, self.commit, path)
+        self.assertFalse(api.r["draft"])
+
     def test_completed_foreign_bytes_preserved_and_never_published(self):
         path = self.bundle()
         api = FakeGitHub()

@@ -46,6 +46,18 @@ export async function loadSiteAbout(container, {endpoint, token, signal} = {}) {
     if (signal?.aborted) return;
     const list = element('dl', '', 'site-about-rows');
     row(list, '网站版本', displayVersion(info.version));
+    const repository = element('a', 'bujishx/gift-ledger', 'site-about-repository');
+    repository.href = 'https://github.com/bujishx/gift-ledger';
+    repository.target = '_blank';
+    repository.rel = 'noopener noreferrer';
+    repository.setAttribute('aria-label', 'bujishx/gift-ledger（在新标签打开）');
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('aria-hidden', 'true');
+    const use = document.createElementNS(icon.namespaceURI, 'use');
+    use.setAttribute('href', '/maintenance/link-icons.svg#new-tab');
+    icon.append(use);
+    repository.append(icon);
+    row(list, 'GitHub 项目', repository);
     if (info.product === '往来有礼') {
       container.replaceChildren(brand, list);
       return;
