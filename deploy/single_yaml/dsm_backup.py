@@ -129,6 +129,11 @@ def run(project, expected_station=None, *, expected_instance=None, engine_sessio
     package = target.Package.discover(backup_events=True)
     docker = ops.Docker(package.target / "usr/bin/docker")
     host = HostSite(docker, project, expected_station)
+    with site.observe_backup_attempt(host, expected_instance):
+        return run_bound(host, project, package, docker, expected_instance, engine_session, recover, key_change)
+
+
+def run_bound(host, project, package, docker, expected_instance, engine_session, recover, key_change):
     os.environ.update(host.settings)
     site.single_yaml_site.project_host(project)
     profile = host.profile()

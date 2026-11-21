@@ -15,6 +15,7 @@ from app.api.maintenance_access import (
     session_errors,
 )
 from app.core.security import PasswordPolicyError
+from app.services.registration_limits import password_capacity
 
 router = APIRouter(
     prefix="/api/v1/maintenance",
@@ -54,9 +55,12 @@ def session_response(token: str):
 def login(body: Login, request: Request):
     sessions = owner_sessions(request)
     credential = body.credential.get_secret_value()
+    origin = request.headers["origin"]
     with session_errors():
-        verify = sessions.login_with_code if body.method == "code" else sessions.login_with_password
-        return session_response(verify(credential, request_origin=request.headers["origin"]))
+        if body.method == "code":
+            return session_response(sessions.login_with_code(credential, request_origin=origin))
+        with password_capacity():
+            return session_response(sessions.login_with_password(credential, request_origin=origin))
 
 
 @router.post("/owner-password")
@@ -68,9 +72,10 @@ def change_password(body: OwnerPassword, request: Request):
         if body.new_password is None:
             return session_response(sessions.remove_password_with_code(code, request_origin=origin))
         try:
-            token = sessions.set_password_with_code(
-                code, body.new_password.get_secret_value(), request_origin=origin
-            )
+            with password_capacity():
+                token = sessions.set_password_with_code(
+                    code, body.new_password.get_secret_value(), request_origin=origin
+                )
         except PasswordPolicyError as exc:
             raise HTTPException(422, exc.message, headers=HEADERS) from exc
         return session_response(token)

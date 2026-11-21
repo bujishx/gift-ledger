@@ -1,4 +1,7 @@
+import ipaddress
 import logging
+import os
+import socket
 from contextlib import contextmanager
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
@@ -23,6 +26,7 @@ from app.core.security import (
     SecurityConfigurationError,
     UsernamePolicyError,
     create_access_token,
+    decode_access_token,
     verify_password,
 )
 from app.db.models import User
@@ -44,6 +48,7 @@ from app.services.auth import (
     get_self_name,
     insert_user,
 )
+from app.services.business_sessions import record_session, revoke_session
 from app.services.import_preview_store import ImportPreviewStore, ImportPreviewStoreError
 from app.services.maintenance_sessions import SessionStoreError
 from app.services.personal_safety_backup_store import (
@@ -51,7 +56,7 @@ from app.services.personal_safety_backup_store import (
     PersonalSafetyBackupStoreError,
 )
 from app.services.registration import InvalidInvitation, consume_invitation, read_policy
-from app.services.registration_limits import AttemptLimitReached, LoginBusy
+from app.services.registration_limits import AttemptLimitReached, LoginBusy, password_capacity
 from app.services.sensitive_actions import (
     SensitiveActionError,
     import_plan_context,
@@ -98,9 +103,35 @@ def registration_mode(request, session, settings, *, lock=False):
     return "open" if settings.registration_enabled else "closed"
 
 
+def credential_peer(request: Request, settings) -> str | None:
+    # A missing verified identity uses only the account and site limits. Neither a LAN
+    # gateway shared by many clients nor the Web container is an individual visitor.
+    if entry_origin(request) != settings.reverse_proxy_origin:
+        return None
+    if os.environ.get("GIFTLEDGER_AUTH_GATEWAY") != "web":
+        return None
+    try:
+        # Compose gives only our Web service the "web" alias on the API's private
+        # network. Uvicorn must retain the TCP peer; no client forwarding header is trusted.
+        addresses = socket.getaddrinfo("web", None, type=socket.SOCK_STREAM)
+        peer = ipaddress.ip_address(request.client.host)
+        if peer not in {ipaddress.ip_address(row[4][0]) for row in addresses}:
+            raise ValueError
+        origin = request.headers.getlist("x-giftledger-client-ip")
+        if origin == ["site"]:
+            return None
+        if len(origin) == 1 and "%" not in origin[0]:
+            return str(ipaddress.ip_address(origin[0]))
+    except (AttributeError, OSError, ValueError):
+        pass
+    raise ApiError(403, "LOGIN_PROXY_UNVERIFIED", "登录来源未能核实，请联系站主检查反向代理设置",
+                   {"Cache-Control": "no-store"})
+
+
 @contextmanager
-def limited_check(request: Request, kind: str, account: str, failure: type[Exception]):
-    peer = request.client.host if request.client else "unknown"
+def limited_check(
+    request: Request, kind: str, peer: str | None, account: str, failure: type[Exception]
+):
     try:
         with request.app.state.registration_limits.attempt(kind, peer, account, failure):
             yield
@@ -136,13 +167,14 @@ def register(
     session: DatabaseSessionDependency,
     _trusted_origin: TrustedOriginDependency,
 ) -> AccountResponse:
+    peer = credential_peer(request, settings)
     try:
         with session.begin():
             mode = registration_mode(request, session, settings, lock=True)
             if mode == "closed":
                 raise ApiError(403, "REGISTRATION_DISABLED", "当前入口暂未开放新用户注册")
             if mode == "invite":
-                with limited_check(request, "invite", "", InvalidInvitation):
+                with limited_check(request, "invite", peer, "", InvalidInvitation):
                     consume_invitation(session, payload.invite_code)
             user = insert_user(session, payload.username, payload.password, is_admin=False)
     except InvalidInvitation as exc:
@@ -182,15 +214,20 @@ def login(
     session: DatabaseSessionDependency,
     _trusted_origin: TrustedOriginDependency,
 ) -> AccountResponse:
+    peer = credential_peer(request, settings)
     try:
         with (
             request.app.state.registration_limits.password_check(),
             limited_check(
-                request, "login", payload.username.strip().lower(), AuthenticationFailedError
+                request, "login", peer, payload.username.strip().lower(), AuthenticationFailedError
             ),
         ):
             user = authenticate_user(session, payload.username, payload.password)
-        access_token = create_access_token(user.id, settings.jwt_secret, user.password_hash)
+            access_token = create_access_token(user.id, settings.jwt_secret, user.password_hash)
+            claims = decode_access_token(access_token, settings.jwt_secret)
+            record_session(session, user.id, claims.session_id, claims.expires_at)
+            account = _account_response(user, get_self_name(session, user.id))
+            session.commit()
     except LoginBusy as exc:
         raise ApiError(
             429,
@@ -212,7 +249,6 @@ def login(
             "登录功能尚未完成安全配置",
         ) from exc
 
-    account = _account_response(user, get_self_name(session, user.id))
     set_auth_cookies(response, access_token, settings)
     if hasattr(request.app.state, "maintenance_owner_dir"):
         try:
@@ -231,12 +267,15 @@ def login(
 def logout(
     response: Response,
     settings: SettingsDependency,
-    _current_user: CurrentUserDependency,
+    current_user: CurrentUserDependency,
+    session: DatabaseSessionDependency,
     session_id: SessionIdDependency,
     store: GiftChangeReauthStoreDependency,
     sensitive_store: SensitiveActionStoreDependency,
     _csrf: CsrfProtectionDependency,
 ) -> MessageResponse:
+    with session.begin():
+        revoke_session(session, current_user.id, session_id)
     clear_auth_cookies(response, settings)
     store.revoke(session_id)
     sensitive_store.revoke_session(session_id)
@@ -270,18 +309,19 @@ def verify_gift_changes(
     sensitive_store: SensitiveActionStoreDependency,
     _csrf: CsrfProtectionDependency,
 ) -> Response:
-    try:
-        sensitive_store.begin_password_attempt(current_user.id)
-    except SensitiveActionError as exc:
-        raise sensitive_action_api_error(exc) from exc
-    if not verify_password(payload.password, current_user.password_hash):
-        audit_log.info("password_verification user_id=%s purpose=gift_change outcome=denied",
-                       current_user.id)
-        raise ApiError(
-            status.HTTP_401_UNAUTHORIZED,
-            "INVALID_PASSWORD",
-            "密码错误",
-        )
+    with password_capacity():
+        try:
+            sensitive_store.begin_password_attempt(current_user.id)
+        except SensitiveActionError as exc:
+            raise sensitive_action_api_error(exc) from exc
+        if not verify_password(payload.password, current_user.password_hash):
+            audit_log.info("password_verification user_id=%s purpose=gift_change outcome=denied",
+                           current_user.id)
+            raise ApiError(
+                status.HTTP_401_UNAUTHORIZED,
+                "INVALID_PASSWORD",
+                "密码错误",
+            )
     sensitive_store.password_succeeded(current_user.id)
     store.mark_verified(session_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -304,17 +344,18 @@ def verify_sensitive_action(
     _csrf: CsrfProtectionDependency,
 ) -> SensitiveActionGrantResponse:
     response.headers["Cache-Control"] = "no-store"
-    if payload.purpose in {"personal_backup", "safety_backup"}:
+    if payload.purpose in {"personal_backup", "safety_backup", "restore_receipts"}:
         require_local_entry(request, settings)
-    try:
-        store.begin_password_attempt(current_user.id)
-    except SensitiveActionError as exc:
-        raise sensitive_action_api_error(exc) from exc
-    if not verify_password(payload.password.get_secret_value(), current_user.password_hash):
-        audit_log.info("password_verification user_id=%s purpose=%s outcome=denied",
-                       current_user.id, payload.purpose)
-        raise ApiError(status.HTTP_401_UNAUTHORIZED, "INVALID_PASSWORD", "密码错误",
-                       {"Cache-Control": "no-store"})
+    with password_capacity():
+        try:
+            store.begin_password_attempt(current_user.id)
+        except SensitiveActionError as exc:
+            raise sensitive_action_api_error(exc) from exc
+        if not verify_password(payload.password.get_secret_value(), current_user.password_hash):
+            audit_log.info("password_verification user_id=%s purpose=%s outcome=denied",
+                           current_user.id, payload.purpose)
+            raise ApiError(status.HTTP_401_UNAUTHORIZED, "INVALID_PASSWORD", "密码错误",
+                           {"Cache-Control": "no-store"})
     store.password_succeeded(current_user.id)
     context = ""
     if payload.purpose == "export_query":

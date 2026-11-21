@@ -207,9 +207,14 @@ function createOwnerConsole({request, expired}) {
       const {service,database,backup,certificate,storage,totals} = data;
       facts("overview-services", [["网站服务"+(owner.build?.version?" · "+owner.build.version:""),stateLabels[service.web],service.web==="unavailable"],["API",stateLabels[service.api]],
         ["数据库"+(database.version ? " · "+database.version : ""),stateLabels[service.database],service.database==="unavailable"]]);
+      const health = data.backup_health || {issues:["unknown"]};
+      const alerts = {failed:"最近一次整站备份失败，请查看备份结果。", overdue:"已连续 "+health.days+" 天或更久没有成功备份，请安排备份。",
+        never:"尚无成功核验的整站备份，请登记钥匙并完成首次备份。", unknown:"无法确认备份状态，请检查宿主维护服务。"};
+      el("backup-alert").textContent = health.issues.map(i => alerts[i]).join(" ");
+      el("backup-alert").hidden = !health.issues.length;
       facts("overview-backup", [["最近结果",stateLabels[backup.state],["failed","needs_review"].includes(backup.state)],
         ["完成时间",time(backup.checked_at)],["实际解密核验",backup.decryption_verified===true?"已通过":backup.decryption_verified===false?"未通过":"尚无核验结果",backup.decryption_verified===false],
-        ["备份编号",backup.backup_id || "—"]]);
+        ["最近成功核验",time(health.last_verified_at)],["备份编号",backup.backup_id || "—"]]);
       const days = certificate.remaining_days;
       const lowBackupSpace = Number.isFinite(storage.backup_free_bytes) && Number.isFinite(storage.backup_required_bytes)
         && storage.backup_free_bytes < storage.backup_required_bytes;
@@ -221,6 +226,7 @@ function createOwnerConsole({request, expired}) {
     } catch {
       if (session !== owner || version !== overviewVersion) return;
       for (const id of ["overview-services","overview-counts","overview-backup","overview-resources"]) el(id).replaceChildren();
+      el("backup-alert").hidden = true;
       el("overview-note").textContent = "暂时无法读取本站状态。可点击刷新，也可在维护操作中查看备份结果。";
     }
   }
@@ -340,6 +346,7 @@ function createOwnerConsole({request, expired}) {
       policyBusy = false; accountBusy = false; invitations = []; clearInvite();
       policyControls(false);
       for (const id of ["usage-feedback","registration-note","invitation-note"]) el(id).textContent = "";
+      el("backup-alert").hidden = true;
       for (const id of ["overview-note","overview-identity","overview-backup","overview-services","overview-counts","overview-resources",
         "usage-rows","usage-cards","users-note","owner-about-content","site-guide-name"]) el(id).replaceChildren();
       document.body.classList.toggle("signed-in",Boolean(owner)); nav.hidden=!owner;

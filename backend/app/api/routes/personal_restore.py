@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, File, Response, UploadFile, status
+from fastapi import APIRouter, File, Query, Response, UploadFile, status
 
 from app.api.dependencies import (
     CompletedProfileDependency,
@@ -29,8 +29,14 @@ from app.schemas.personal_restore import (
     PersonalRestoreConfirmResponse,
     PersonalRestoreCounts,
     PersonalRestorePreviewResponse,
+    PersonalRestoreReceipt,
 )
-from app.services.personal_backup import PACKAGE_SUFFIX, PersonalBackupError, build_personal_backup
+from app.services.personal_backup import (
+    PACKAGE_SUFFIX,
+    PersonalBackupError,
+    PersonalBackupLimits,
+    build_personal_backup,
+)
 from app.services.personal_restore import (
     ERROR_ACCOUNT_UNAVAILABLE,
     ERROR_BACKUP_INVALID,
@@ -43,7 +49,9 @@ from app.services.personal_restore import (
     RESTORE_MODE_REPLACE,
     PersonalRestoreError,
     analyze_personal_restore,
+    recent_restore_receipts,
     replace_personal_ledger,
+    verify_restore_password,
 )
 from app.services.personal_restore import (
     PersonalRestoreDictionaryRename as ServiceDictionaryRename,
@@ -56,6 +64,7 @@ from app.services.personal_safety_backup_store import (
     PersonalSafetyBackupStore,
     PersonalSafetyBackupStoreError,
 )
+from app.services.registration_limits import uses_password_budget
 from app.services.sensitive_actions import SensitiveActionError
 
 _PREVIEW_EXPIRED = "PERSONAL_RESTORE_EXPIRED"
@@ -225,7 +234,10 @@ def download_personal_backup(
     authorization.authorize("personal_backup")
     try:
         download = build_personal_backup(
-            session, current_user.id, application_version=settings.app_version
+            session,
+            current_user.id,
+            application_version=settings.app_version,
+            limits=PersonalBackupLimits.from_settings(settings),
         )
     except PersonalBackupError as exc:
         if exc.code == "user_unavailable":
@@ -236,9 +248,9 @@ def download_personal_backup(
                 {"WWW-Authenticate": "Cookie", "Cache-Control": "no-store"},
             ) from exc
         raise ApiError(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            ERROR_RESTORE_FAILED,
-            _RESTORE_FAILED_MESSAGE,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "PERSONAL_BACKUP_UNRESTORABLE",
+            "无法生成经恢复校验的个人备份。" + exc.message,
             dict(_NO_STORE),
         ) from exc
     return _download_response(download.content, download.filename)
@@ -288,7 +300,9 @@ def preview_personal_restore(
         )
 
     try:
-        analysis = analyze_personal_restore(session, current_user.id, content)
+        analysis = analyze_personal_restore(
+            session, current_user.id, content, limits=PersonalBackupLimits.from_settings(settings)
+        )
     except PersonalRestoreError as exc:
         raise _map_restore_error(exc) from exc
 
@@ -296,6 +310,7 @@ def preview_personal_restore(
         preview_token, expires_at = _build_preview_store(settings).create(
             user_id=current_user.id,
             content=content,
+            ledger_revision=analysis.ledger_revision,
         )
     except PersonalRestorePreviewStoreError:
         raise ApiError(
@@ -327,6 +342,29 @@ def preview_personal_restore(
     )
 
 
+@uses_password_budget
+def _authorize_restore(token, password, current_user, settings, password_attempts):
+    """Reserve password capacity before consuming the preview or charging a failure."""
+    try:
+        password_attempts.begin_password_attempt(current_user.id)
+    except SensitiveActionError as exc:
+        raise sensitive_action_api_error(exc) from exc
+
+    store = _build_preview_store(settings)
+    try:
+        claimed = store.claim(token, user_id=current_user.id)
+    except PersonalRestorePreviewStoreError as exc:
+        raise _map_preview_store_error(exc) from exc
+
+    try:
+        credential = verify_restore_password(current_user, password)
+    except PersonalRestoreError as exc:
+        claimed.discard()
+        raise _map_restore_error(exc) from exc
+    password_attempts.password_succeeded(current_user.id)
+    return claimed, credential
+
+
 @router.post(
     "/restores/personal/{token}/confirm",
     response_model=PersonalRestoreConfirmResponse,
@@ -346,23 +384,18 @@ def confirm_personal_restore(
 ) -> PersonalRestoreConfirmResponse:
     response.headers["Cache-Control"] = "no-store"
 
-    try:
-        password_attempts.begin_password_attempt(current_user.id)
-    except SensitiveActionError as exc:
-        raise sensitive_action_api_error(exc) from exc
-
-    store = _build_preview_store(settings)
-    try:
-        claimed = store.claim(token, user_id=current_user.id)
-    except PersonalRestorePreviewStoreError as exc:
-        raise _map_preview_store_error(exc) from exc
+    claimed, credential = _authorize_restore(
+        token, body.password.get_secret_value(), current_user, settings, password_attempts
+    )
 
     try:
         result = replace_personal_ledger(
             session,
             current_user.id,
             claimed.content,
-            password=body.password.get_secret_value(),
+            expected_revision=claimed.ledger_revision,
+            limits=PersonalBackupLimits.from_settings(settings),
+            credential=credential,
             safety_backup_store=_build_safety_backup_store(settings),
             application_version=settings.app_version,
             dictionary_renames=tuple(
@@ -376,8 +409,6 @@ def confirm_personal_restore(
             ),
         )
     except PersonalRestoreError as exc:
-        if exc.code != ERROR_PASSWORD_INCORRECT:
-            password_attempts.password_succeeded(current_user.id)
         raise _map_restore_error(exc) from exc
     finally:
         # 确认成功、密码错误、状态冲突、安全备份失败或未知失败都必须一次性消耗 token。
@@ -387,7 +418,6 @@ def confirm_personal_restore(
             pass
 
     # 只有成功才清除当前认证与 CSRF Cookie；失败路径会抛出异常，不会走到这里。
-    password_attempts.password_succeeded(current_user.id)
     clear_auth_cookies(response, settings)
     return PersonalRestoreConfirmResponse(
         counts=_counts_from_backup(result.counts),
@@ -395,6 +425,20 @@ def confirm_personal_restore(
         safety_backup_expires_at=result.safety_backup_expires_at,
         reauth_required=result.reauth_required,
     )
+
+
+@router.post("/restores/personal/receipts", response_model=list[PersonalRestoreReceipt])
+def list_personal_restore_receipts(
+    response: Response,
+    current_user: CurrentUserDependency,
+    _profile: CompletedProfileDependency,
+    session: DatabaseSessionDependency,
+    authorization: SensitiveActionGateDependency,
+    before: Annotated[int | None, Query(gt=0)] = None,
+):
+    response.headers["Cache-Control"] = "no-store"
+    authorization.authorize("restore_receipts")
+    return recent_restore_receipts(session, current_user, before)
 
 
 @router.get(

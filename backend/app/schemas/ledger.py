@@ -84,6 +84,8 @@ class EventGiftsCreateRequest(BaseModel):
 class EventUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    expected_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
     host_contact_id: int | None = Field(default=None, strict=True, gt=0)
     kinship_type_id: int | None = Field(default=None, strict=True, gt=0)
     event_type_id: int | None = Field(default=None, strict=True, gt=0)
@@ -92,7 +94,7 @@ class EventUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def require_at_least_one_field(self) -> "EventUpdateRequest":
-        if not self.model_fields_set:
+        if not self.model_fields_set - {"expected_revision"}:
             raise ValueError("至少需要提交一个要修改的事件字段")
         required_fields = {
             "host_contact_id",
@@ -111,6 +113,8 @@ class EventUpdateRequest(BaseModel):
 class GiftUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    expected_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
     giver_contact_id: int | None = Field(default=None, strict=True, gt=0)
     amount: Decimal | None = Field(
         default=None,
@@ -124,7 +128,7 @@ class GiftUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def require_at_least_one_field(self) -> "GiftUpdateRequest":
-        if not self.model_fields_set:
+        if not self.model_fields_set - {"expected_revision"}:
             raise ValueError("至少需要提交一个要修改的流水字段")
         if "giver_contact_id" in self.model_fields_set and self.giver_contact_id is None:
             raise ValueError("随礼人不能设为空")
@@ -145,6 +149,7 @@ class LedgerDictionaryResponse(BaseModel):
 
 class EventResponse(BaseModel):
     id: int
+    revision: str
     host: LedgerContactResponse
     kinship_type: LedgerDictionaryResponse
     event_type: LedgerDictionaryResponse
@@ -160,6 +165,7 @@ class EventResponse(BaseModel):
 
 class GiftResponse(BaseModel):
     id: int
+    revision: str
     giver: LedgerContactResponse
     amount: Decimal
     gift_details: str | None

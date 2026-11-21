@@ -156,6 +156,18 @@ def render(project, url, identity, *, project_dir=None, site_dir=".", config_fil
                           f"/usr/bin/python3 -I {installed} status --project {quote(project)}")
         admin = f"/usr/bin/python3 -I {installed}"
         project_arg = f" --project {quote(project)}"
+        paragraphs.append("★ 整站备份提醒（群晖和 Ubuntu）\n"
+            "内网维护页的“站点总览”会显示最近成功解密核验时间。备份失败、尚无成功备份，以及默认满 7 天未成功都会提醒。"
+            "在管理员终端可调整为 1–365 天，并选填站外监测的 HTTPS 心跳地址。站外接收人和通知方式由您在自己的监测服务设置。\n"
+            + admin + " configure-backup-alerts" + project_arg + "\n"
+            "群晖请在 DSM「控制面板 → 任务计划」新建已启用的计划任务，使用 root，每 15 分钟执行下面一行。"
+            "已配置 DSM 邮件时，在任务设置填写收件人，选异常终止时发送详情。相同告警每天最多重复通知一次。\n"
+            + admin + " check-backup" + project_arg + " --scheduled\n"
+            "Ubuntu 安装新版宿主维护服务后会自动启用每 15 分钟的备份检查。可用 systemctl list-timers 查看 giftledger-backup-alert-"
+            + project + ".timer。要在 NAS 关机时也收到通知，请为这个站单独建立站外心跳，间隔 15 分钟并预留网络宽限。"
+            "监测服务须支持在 HTTPS 路径接收 POST 和在同一路径 /fail 接收失败报告；请求正文为空。"
+            "随时手动运行下面一行可查看当前告警；本检查读取备份回执，备份本身仍需按站主的安排执行。\n"
+            + admin + " check-backup" + project_arg)
         paragraphs.append("本站备份钥匙补领与更换（群晖和 Ubuntu）\n"
                           "在本站维护页选择“维护操作”，在“管理已登记的备份钥匙”卡片中选择补领或更换。由服务器管理员在本站交互终端 sudo -i 后按提示运行对应命令。\n"
                           f"补领本站备份钥匙    {admin} recover-key{project_arg}\n"

@@ -32,15 +32,16 @@ from __future__ import annotations
 import json
 import re
 import zlib
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from functools import cache
 from hashlib import sha256
 from io import BytesIO
 from typing import Any
 from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile, ZipInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import (
@@ -267,6 +268,26 @@ class PersonalBackupError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class PersonalBackupLimits:
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
+    max_uncompressed_bytes: int = DEFAULT_MAX_UNCOMPRESSED_BYTES
+    max_records: int = DEFAULT_MAX_RECORDS
+    max_compression_ratio: int = MAX_COMPRESSION_RATIO
+
+    @classmethod
+    def from_settings(cls, settings):
+        return cls(
+            settings.personal_restore_max_file_bytes,
+            settings.personal_restore_max_uncompressed_bytes,
+            settings.personal_restore_max_records,
+            settings.personal_restore_max_compression_ratio,
+        )
+
+
+DEFAULT_PERSONAL_LIMITS = PersonalBackupLimits()
+
+
+@dataclass(frozen=True, slots=True)
 class BackupCounts:
     """备份包六类数据的数量。"""
 
@@ -433,11 +454,41 @@ def build_personal_backup(
     *,
     application_version: str,
     generated_at: datetime | None = None,
+    limits: PersonalBackupLimits = DEFAULT_PERSONAL_LIMITS,
 ) -> PersonalBackupDownload:
     """从当前用户数据库数据生成版本化 ``.giftledger`` ZIP 字节（只读）。"""
+    download = _write_personal_backup(session, user_id, application_version, generated_at, limits)
+    # Release row collections and intermediate JSON before running the actual restore parser.
+    parse_personal_backup(download.content, **asdict(limits))
+    return download
+
+
+def _write_personal_backup(
+    session: Session,
+    user_id: int,
+    application_version: str,
+    generated_at: datetime | None,
+    limits: PersonalBackupLimits,
+) -> PersonalBackupDownload:
     user = session.scalar(select(User).where(User.id == user_id))
     if user is None or not user.is_active:
         raise PersonalBackupError(ERROR_USER_UNAVAILABLE, "账号不可用，无法生成备份")
+
+    count = remark_bytes = 0
+    for model in (RelationshipType, KinshipType, EventType, Contact, EventRecord, GiftRecord):
+        projection = [func.count()]
+        if hasattr(model, "remark"):
+            projection.append(func.sum(func.length(model.remark)))
+        row = session.execute(
+            select(*projection).select_from(model).where(model.user_id == user_id)
+        ).one()
+        count += row[0]
+        if len(row) > 1:
+            remark_bytes += row[1] or 0
+    if count > limits.max_records:
+        raise PersonalBackupError(ERROR_RECORD_LIMIT, "账本记录超过个人恢复上限")
+    if remark_bytes > limits.max_uncompressed_bytes:
+        raise PersonalBackupError(ERROR_ZIP_TOTAL_TOO_LARGE, "账本备注总量超过个人恢复上限")
 
     contacts = list(
         session.scalars(
@@ -493,6 +544,7 @@ def build_personal_backup(
     kinship_backup_ids = {item.id: index for index, item in enumerate(kinships, start=1)}
     event_type_backup_ids = {item.id: index for index, item in enumerate(event_types, start=1)}
 
+    @cache
     def resolve_system(model: type[Any], item_id: int, category: str) -> dict[str, Any]:
         item = session.scalar(select(model).where(model.id == item_id, model.user_id.is_(None)))
         if item is None or item.system_code not in _FINAL_CODES_BY_CATEGORY[category]:
@@ -640,10 +692,27 @@ def build_personal_backup(
     }
     manifest_bytes = _dump_json(manifest)
 
+    if len(ledger_bytes) + len(manifest_bytes) > limits.max_uncompressed_bytes:
+        raise PersonalBackupError(
+            ERROR_ZIP_TOTAL_TOO_LARGE, "账本展开后超过个人恢复上限，无法生成可恢复的个人备份"
+        )
+    entries = ((MANIFEST_FILENAME, manifest_bytes), (LEDGER_FILENAME, ledger_bytes))
     buffer = BytesIO()
-    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
-        archive.writestr(_zip_info(MANIFEST_FILENAME, generated_utc), manifest_bytes)
-        archive.writestr(_zip_info(LEDGER_FILENAME, generated_utc), ledger_bytes)
+    with ZipFile(buffer, "w") as archive:
+        for name, data in entries:
+            archive.writestr(_zip_info(name, generated_utc), data)
+        uncompressed = {
+            entry.filename
+            for entry in archive.infolist()
+            if entry.file_size > limits.max_compression_ratio * entry.compress_size
+        }
+    # Highly repetitive, legitimate data can otherwise fail the bomb guard on re-import.
+    if uncompressed:
+        buffer = BytesIO()
+        with ZipFile(buffer, "w") as archive:
+            for name, data in entries:
+                info = _zip_info(name, generated_utc)
+                archive.writestr(info, data, compresslevel=0 if name in uncompressed else None)
     content = buffer.getvalue()
 
     filename = f"gift-ledger-personal-backup-{generated_utc:%Y%m%d-%H%M%S}{PACKAGE_SUFFIX}"
@@ -934,8 +1003,8 @@ def _check_entry_size(entry: ZipInfo, limit: int) -> None:
         )
 
 
-def _check_compression_ratio(entry: ZipInfo) -> None:
-    if entry.compress_size <= 0 or entry.file_size <= entry.compress_size * MAX_COMPRESSION_RATIO:
+def _check_compression_ratio(entry: ZipInfo, max_ratio: int) -> None:
+    if entry.compress_size <= 0 or entry.file_size <= entry.compress_size * max_ratio:
         return
     raise PersonalBackupError(
         ERROR_ZIP_COMPRESSION_RATIO, "备份压缩比例异常，疑似压缩炸弹，已拒绝解析"
@@ -943,7 +1012,7 @@ def _check_compression_ratio(entry: ZipInfo) -> None:
 
 
 def _read_backup_files(
-    content: bytes, *, max_file_bytes: int, max_uncompressed_bytes: int
+    content: bytes, *, max_file_bytes: int, max_uncompressed_bytes: int, max_compression_ratio: int
 ) -> tuple[bytes, bytes]:
     if not content:
         raise PersonalBackupError(ERROR_EMPTY_FILE, "备份文件是空的")
@@ -982,7 +1051,7 @@ def _read_backup_files(
             if normalized in seen:
                 raise PersonalBackupError(ERROR_ZIP_DUPLICATE_ENTRY, "备份包含重复条目，已拒绝解析")
             seen.add(normalized)
-            _check_compression_ratio(entry)
+            _check_compression_ratio(entry, max_compression_ratio)
             _check_entry_size(entry, max_uncompressed_bytes)
             total += entry.file_size
         if total > max_uncompressed_bytes:
@@ -1012,12 +1081,14 @@ def parse_personal_backup(
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
     max_uncompressed_bytes: int = DEFAULT_MAX_UNCOMPRESSED_BYTES,
     max_records: int = DEFAULT_MAX_RECORDS,
+    max_compression_ratio: int = MAX_COMPRESSION_RATIO,
 ) -> ParsedPersonalBackup:
     """在纯内存中严格解析并校验 ``.giftledger`` 字节，不访问数据库。"""
     manifest_bytes, ledger_bytes = _read_backup_files(
         content,
         max_file_bytes=max_file_bytes,
         max_uncompressed_bytes=max_uncompressed_bytes,
+        max_compression_ratio=max_compression_ratio,
     )
 
     manifest = _expect_object(_parse_json(manifest_bytes, MANIFEST_FILENAME), "manifest")

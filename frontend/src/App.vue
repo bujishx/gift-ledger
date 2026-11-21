@@ -1,4 +1,5 @@
 <script setup>
+import { revisionReview } from "./lib/ledgerRevision.js";
 import {
   computed,
   nextTick,
@@ -329,8 +330,22 @@ async function verifiedDownload(purpose, context, label, path, filename) {
 }
 function exportAllData() { return verifiedDownload('export_all', {}, '导出全部数据', '/exports/all.xlsx', '往来有礼全部数据.xlsx'); }
 function downloadPersonalBackup() { return verifiedDownload('personal_backup', {}, '下载个人账本备份', '/backups/personal', '往来有礼个人账本.giftledger'); }
-function downloadSafetyBackup() {
-  const token = safetyBackupToken.value;
+async function lookupRestoreReceipts(before = null) {
+  const auth = await requestSensitiveAuthorization('restore_receipts', {}, '查询本人最近的恢复回执');
+  if (!auth || auth.marker !== loginMarker()) return;
+  busy.value = true;
+  try {
+    const receipts = await api('/restores/personal/receipts' + queryString({before}), {
+      method: 'POST', headers: { 'X-Operation-Grant': auth.grant },
+    });
+    if (auth.marker === loginMarker()) {
+      restoreReceipts.value = before ? [...restoreReceipts.value, ...receipts] : receipts;
+      hasOlderReceipts.value = receipts.length === 20;
+    }
+  } catch (err) { if (auth.marker === loginMarker()) popupError(err); }
+  finally { busy.value = false; }
+}
+function downloadSafetyBackup(token = safetyBackupToken.value) {
   if (!token) return;
   return verifiedDownload('safety_backup', { safety_backup_token: token }, '下载恢复前安全备份', `/restores/personal/safety-backups/${encodeURIComponent(token)}`, '往来有礼恢复前安全备份.giftledger');
 }
@@ -370,6 +385,8 @@ const restorePreview = ref(null);
 const restorePassword = ref("");
 const restoreAcknowledged = ref(false);
 const restoreRenames = ref([]);
+const restoreReceipts = ref(null);
+const hasOlderReceipts = ref(false);
 const safetyBackupToken = ref(
   sessionStorage.getItem("gift_ledger_safety_token") || "",
 );
@@ -752,6 +769,8 @@ async function logout() {
 }
 // 仅在登录边界清空内存资料；同一登录内普通切页仍保留草稿与查询。
 function resetPageState() {
+  restoreReceipts.value = null;
+  hasOlderReceipts.value = false;
   closeSensitiveAuthorization();
   invalidateEventIdentity();
   invalidateDetailAvailability();
@@ -1131,6 +1150,45 @@ function eventHasMyGift(row) {
   const selfId = selfContact.value?.id;
   return (row.gifts || []).some((gift) => gift.giver.id === selfId);
 }
+function eventEditValues(event, hostId = null) {
+  return {
+    host_contact_id: hostId || event?.host?.id || null,
+    kinship_type_id: event?.kinship_type?.id || null,
+    event_type_id: event?.event_type?.id || null,
+    event_date: event ? (isCompleteEventDate(event) ? event.event_date : '') : today(),
+    remark: event?.remark || '',
+  };
+}
+function giftEditValues(gift) {
+  return { giver_contact_id: gift.giver.id, amount: String(gift.amount),
+    gift_details: gift.gift_details || '', remark: gift.remark || '' };
+}
+async function reviewConflictingEdit(kind) {
+  const event = kind === 'event';
+  const source = event ? eventEditingSource.value : giftEditDetail.value.gift;
+  const marker = loginMarker();
+  const current = () => marker === loginMarker() && (event
+    ? eventFormOpen.value && source === eventEditingSource.value
+    : giftEditOpen.value && source === giftEditDetail.value?.gift);
+  try {
+    const detail = await api(`/${event ? 'events' : 'gifts'}/${source.id}`);
+    if (!current()) return;
+    const values = event ? eventEditValues : giftEditValues;
+    const form = event ? eventForm : giftEditForm;
+    const labels = event
+      ? { host_contact_id:'事主编号', kinship_type_id:'亲属称谓编号', event_type_id:'事件类型编号', event_date:'办事日期', remark:'事件备注' }
+      : { giver_contact_id:'随礼人编号', amount:'礼金', gift_details:'实物明细', remark:'流水备注' };
+    const review = revisionReview(values(source), values(detail[kind]), form, labels);
+    const approved = await dialog.ask({title:'这份资料已在另一处更正',
+      message: review.changes.join('；') + '。重新核对会保留你改过的字段，并更新其余字段。请检查表单后再保存。',
+      confirmLabel:'重新核对草稿', cancelLabel:'保留当前草稿'});
+    if (!approved || !current()) return;
+    if (event) eventEditingSource.value = detail.event;
+    else giftEditDetail.value = detail;
+    Object.assign(form, review.merged);
+    error.value = '草稿已保留，请核对后再次保存。';
+  } catch (err) { if (current()) popupError(err); }
+}
 function openEventForm(row = null, hostId = null, preserveReturn = false) {
   error.value = "";
   closeFloatingCards();
@@ -1140,13 +1198,7 @@ function openEventForm(row = null, hostId = null, preserveReturn = false) {
   const event = row?.event || row;
   eventEditingId.value = event?.id || null;
   eventEditingSource.value = event || null;
-  Object.assign(eventForm, {
-    host_contact_id: hostId || event?.host?.id || null,
-    kinship_type_id: event?.kinship_type?.id || null,
-    event_type_id: event?.event_type?.id || null,
-    event_date: event ? (isCompleteEventDate(event) ? event.event_date : '') : today(),
-    remark: event?.remark || "",
-  });
+  Object.assign(eventForm, eventEditValues(event, hostId));
   eventFormOpen.value = true;
 }
 async function editDuplicateEvent() {
@@ -1213,7 +1265,7 @@ async function saveEvent() {
       remark: eventForm.remark.trim() || null,
     };
     const result = eventEditingId.value
-      ? await api(`/events/${eventEditingId.value}`, { method: "PATCH", body })
+      ? await api(`/events/${eventEditingId.value}`, { method: "PATCH", body: { ...body, expected_revision: eventEditingSource.value?.revision } })
       : await api("/events", { method: "POST", body });
     if (savedAccount !== account.value?.id || savedSignature !== identitySignature.value || !eventFormOpen.value) return;
     const reopenDetail = Boolean(eventEditingId.value);
@@ -1234,6 +1286,7 @@ async function saveEvent() {
     success("事件已保存，可随后到记账页登记记账记录");
   } catch (err) {
     if (savedAccount !== account.value?.id || savedSignature !== identitySignature.value) return;
+    if (err.code === 'LEDGER_REVISION_CONFLICT') return await reviewConflictingEdit('event');
     if (err.code === 'EVENT_ALREADY_EXISTS' && err.details?.existing_event_id) {
       try {
         const detail = await api('/events/' + err.details.existing_event_id);
@@ -1565,12 +1618,7 @@ async function openGiftEditor(gift, eventId = null) {
     if (editingAccount !== account.value?.id) return;
     giftEditDetail.value = detail;
     giftEditEvent.value = event;
-    Object.assign(giftEditForm, {
-      giver_contact_id: detail.gift.giver.id,
-      amount: String(detail.gift.amount),
-      gift_details: detail.gift.gift_details || "",
-      remark: detail.gift.remark || "",
-    });
+    Object.assign(giftEditForm, giftEditValues(detail.gift));
     giftEditOpen.value = true;
   } catch (err) {
     if (editingAccount !== account.value?.id) return;
@@ -1630,6 +1678,7 @@ async function saveGiftEdit() {
   busy.value = true;
   try {
     const body = {
+      expected_revision: giftEditDetail.value.gift.revision,
       amount,
       gift_details: giftEditForm.gift_details.trim() || null,
       remark: giftEditForm.remark.trim() || null,
@@ -1649,6 +1698,7 @@ async function saveGiftEdit() {
     await restoreEntryDraft();
     success("记账记录已更正");
   } catch (err) {
+    if (err.code === 'LEDGER_REVISION_CONFLICT') return await reviewConflictingEdit('gift');
     popupError(err);
   } finally {
     busy.value = false;
@@ -1991,9 +2041,11 @@ async function confirmRestore() {
     authMode.value = "login";
     success("恢复成功。请重新登录，之后可在“我的”下载恢复前安全备份。");
   } catch (err) {
-    restorePreview.value = null;
+    if (!['LOGIN_BUSY', 'PASSWORD_VERIFICATION_LIMITED'].includes(err.code)) restorePreview.value = null;
     restorePassword.value = "";
-    popupError(err);
+    if (!err.status || err.status >= 500) {
+      error.value = '尚未取得恢复结果。请重新登录，在内网“我的 → 备份恢复”查询恢复回执，再决定是否重试。';
+    } else popupError(err);
   } finally {
     busy.value = false;
   }
@@ -2018,8 +2070,8 @@ watch(profile, (x) => {
 });
 const authState = reactive({account,authMode,registrationMode,inviteCode,credentials,profileForm,busy,error,notice});
 const authActions = {authSubmit,saveProfile,refreshRegistration};
-const meState = reactive({profileForm,meSection,busy,dictionaries,dictionaryCategory,dictionaryDraft,dictionaryRename,importFile,importPreview,importDecisions,importDecisionsDirty,importAcknowledged,importResult,importResultUncertain,importRecoveryUnavailable,importBatches,importBatchLoading,importBatchError,restoreFile,restorePreview,restorePassword,restoreAcknowledged,restoreRenames,safetyBackupToken,error,notice});
-const meActions = Object.fromEntries(Object.entries({saveMyProfile,exportAllData,downloadPersonalBackup,downloadSafetyBackup,previewOldLedger,confirmOldLedger,changeImportDecision,openImportIssue,queryImportResult,retryImportConfirmation,returnImportToPreview,refreshImportBatches,previewRestore,confirmRestore,createDictionaryItem,saveDictionaryRename,cancelDictionaryRename,setDictionaryActive,deleteDictionary,logout}).map(([name, action]) => [name, (...args) => {
+const meState = reactive({profileForm,meSection,busy,dictionaries,dictionaryCategory,dictionaryDraft,dictionaryRename,importFile,importPreview,importDecisions,importDecisionsDirty,importAcknowledged,importResult,importResultUncertain,importRecoveryUnavailable,importBatches,importBatchLoading,importBatchError,restoreFile,restorePreview,restorePassword,restoreAcknowledged,restoreRenames,restoreReceipts,hasOlderReceipts,safetyBackupToken,error,notice});
+const meActions = Object.fromEntries(Object.entries({saveMyProfile,exportAllData,downloadPersonalBackup,downloadSafetyBackup,lookupRestoreReceipts,previewOldLedger,confirmOldLedger,changeImportDecision,openImportIssue,queryImportResult,retryImportConfirmation,returnImportToPreview,refreshImportBatches,previewRestore,confirmRestore,createDictionaryItem,saveDictionaryRename,cancelDictionaryRename,setDictionaryActive,deleteDictionary,logout}).map(([name, action]) => [name, (...args) => {
   if (busy.value) return;
   error.value = '';
   notice.value = '';

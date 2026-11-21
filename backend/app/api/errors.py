@@ -5,6 +5,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.services.registration_limits import LoginBusy
+
 
 class ErrorDetail(BaseModel):
     code: str
@@ -43,6 +45,11 @@ def _response(
 
 
 def register_error_handlers(application: FastAPI) -> None:
+    @application.exception_handler(LoginBusy)
+    async def handle_password_busy(_request: Request, _exc: LoginBusy) -> JSONResponse:
+        return _response(429, "LOGIN_BUSY", "密码验证繁忙，请稍后再试",
+                         {"Retry-After": "1", "Cache-Control": "no-store"})
+
     @application.exception_handler(ApiError)
     async def handle_api_error(_request: Request, exc: ApiError) -> JSONResponse:
         return _response(exc.status_code, exc.code, exc.message, exc.headers, exc.details)

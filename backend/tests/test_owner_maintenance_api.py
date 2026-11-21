@@ -18,6 +18,8 @@ from app.api.dependencies import get_authentication_session, get_database_sessio
 from app.core.config import Settings
 from app.core.security import hash_password
 from app.db.models import User
+from app.db.registration import DATABASE
+from app.db.registration import metadata as site_schema
 from app.main import create_app
 from app.services.maintenance_sessions import OwnerSessions
 
@@ -36,7 +38,7 @@ class Site:
     project: str
     settings: Settings
 
-    def client(self) -> TestClient:
+    def client(self, *, peer: str = "testclient") -> TestClient:
         app = create_app(self.settings)
 
         def database():
@@ -45,7 +47,7 @@ class Site:
 
         app.dependency_overrides[get_database_session] = database
         app.dependency_overrides[get_authentication_session] = database
-        return TestClient(app, base_url=ORIGIN)
+        return TestClient(app, base_url=ORIGIN, client=(peer, 50000))
 
     def verified(self):
         return self.store.login_with_code(self.store.issue_login_code(), request_origin=ORIGIN)
@@ -101,6 +103,9 @@ def site(monkeypatch, tmp_path):
         _env_file=None,
     )
     db = create_engine(f"sqlite:///{tmp_path / 'ledger.sqlite3'}")
+    db = db.execution_options(schema_translate_map={DATABASE: None})
+    with db.begin() as conn:
+        site_schema.create_all(conn)
     # Use only the columns used by these application routes; production DDL runs in the MySQL suite.
     with db.begin() as conn:
         conn.exec_driver_sql(
@@ -400,6 +405,32 @@ def test_usage_cursor_covers_unique_accounts_without_loading_passwords_or_duplic
     assert len({row["username"] for row in first["users"] + second["users"]}) == 57
 
 
+def test_logout_persists_for_one_device_and_old_version_requires_fresh_login(site):
+    from app.api.security import AUTH_COOKIE_NAME, CSRF_COOKIE_NAME
+    from app.core.security import create_access_token
+    from app.db.registration import business_sessions
+
+    site.seed()
+    with site.client() as first, site.client() as other:
+        assert login(first, "ledger_user", site.old_password).status_code == 200
+        original = first.cookies.get(AUTH_COOKIE_NAME)
+        assert login(other, "ledger_user", site.old_password).status_code == 200
+        csrf = {"Origin": ORIGIN, "X-CSRF-Token": first.cookies.get(CSRF_COOKIE_NAME)}
+        assert first.post("/api/v1/auth/logout", headers=csrf).status_code == 200
+        assert other.get("/api/v1/auth/me").status_code == 200
+    with site.db.begin() as conn:
+        # This pre-upgrade-style signed token was never registered on the server.
+        password_hash = conn.exec_driver_sql(
+            "SELECT password_hash FROM users WHERE id=1"
+        ).scalar_one()
+        old = create_access_token(1, site.settings.jwt_secret, password_hash)
+        assert len(conn.execute(business_sessions.select()).all()) == 1
+    with site.client() as restarted:
+        for token in (original, old):
+            restarted.cookies.set(AUTH_COOKIE_NAME, token)
+            assert restarted.get("/api/v1/auth/me").status_code == 401
+
+
 def test_owner_can_suspend_restore_and_delete_only_the_confirmed_empty_account(site):
     site.seed()
     owner = headers(site.verified())
@@ -439,6 +470,7 @@ def test_owner_can_suspend_restore_and_delete_only_the_confirmed_empty_account(s
             ).status_code
             == 200
         )
+        assert c.get("/api/v1/auth/me").status_code == 401
         assert login(c, "ledger_user", site.old_password).status_code == 200
         stale = {**target, "id": 2}  # A name may have been registered again since the list loaded.
         assert c.post(BASE + "/accounts/delete-empty", json=stale, headers=owner).status_code == 404

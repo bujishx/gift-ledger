@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import tempfile
 
@@ -36,15 +37,37 @@ def persist(name, raw):
         core.exclusive_bytes(path, raw)
 
 
+def check_capacity(cipher_bytes, database_bytes=0, app_bytes=0):
+    # The outer uncompressed ZIP and its extracted files coexist during verification.
+    require(shutil.disk_usage("/tmp").free >= 2 * cipher_bytes + 8 * 1024**2, "restore_private_workspace_too_small")
+    database_fs = Path("/work/mysql-storage-info")
+    require(database_fs.is_file() and not database_fs.is_symlink(), "restore_database_storage_unavailable")
+    margin = 32 * 1024**2
+    db_needed = 2 * database_bytes
+    if core.APP_DATA.stat().st_dev == database_fs.stat().st_dev:
+        db_needed += app_bytes
+    require(shutil.disk_usage(database_fs).free >= db_needed + margin and
+            shutil.disk_usage(core.APP_DATA).free >= app_bytes + margin, "restore_destination_space_low")
+
+
 def preflight(selected, project, operation, status):
     request = selected.request(status, operation)
     core.valid_request(request, project, "restore")
     context = core.local_context(project)
     core.require_tmpfs()
+    cipher_bytes = core.ciphertext_path(request["options"]).stat().st_size
+    check_capacity(cipher_bytes)
     # Authentication and an actual decrypt-and-read finish while the website is online.
     with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
         try:
-            core.decrypted_archive(request, Path(tmp), context)
+            from app.services.database_backup import parse_admin_backup
+
+            manifest, extracted, _ = core.decrypted_archive(request, Path(tmp), context, extract=True)
+            package = extracted / "database.gladminbackup"
+            metadata = parse_admin_backup(package)
+            core.stream_sql(package, metadata)
+            app_size = sum(item["size"] for item in manifest["app_files"].values())
+            check_capacity(0, metadata.sql_size, app_size)
         except core.GuiMaintenanceError as exc:
             if exc.code == "maintenance_subprocess_failed":
                 raise core.GuiMaintenanceError("restore_original_key_cannot_decrypt_bundle") from None
@@ -53,6 +76,7 @@ def preflight(selected, project, operation, status):
     before = {"status": status, "target": marker, "bundle_sha256": selected.bundle_hash}
     persist("target-before.json", core.json_bytes(before) + b"\n")
     persist("request.json", core.json_bytes(request) + b"\n")
+    persist("capacity.json", core.json_bytes({"cipher": cipher_bytes, "sql": metadata.sql_size, "app": app_size}) + b"\n")
     return {"target": marker, "source": selected.options(), "eligible": True}
 
 
@@ -67,6 +91,9 @@ def apply_or_verify(selected, project, operation, status, *, verify_only):
         require(not verify_only, "restore_completion_not_proven")
         require(request == selected.request(status, operation), "restore_requires_empty_target")
     if not verify_only:
+        if not completed.exists():
+            capacity = core.json_file(core.EXCHANGE / "capacity.json", private=True)
+            check_capacity(capacity["cipher"], capacity["sql"], capacity["app"])
         core.execute(project, "restore")
     context = core.local_context(project)
     receipt = core.public_receipt(core.completed_operation(operation, context, expected_action="restore"))
@@ -98,6 +125,10 @@ def run(action, backup_id, operation):
         if action == "preflight":
             return preflight(selected, project, operation, status)
         if action == "check-target":
+            if not (core.EXCHANGE / "capacity.json").exists():
+                preflight(selected, project, operation, status)
+            capacity = core.json_file(core.EXCHANGE / "capacity.json", private=True)
+            check_capacity(capacity["cipher"], capacity["sql"], capacity["app"])
             before = core.json_file(core.EXCHANGE / "target-before.json", private=True)
             require(selected.bundle_hash == before["bundle_sha256"] and target_identity(project, status) == before["target"]
                     and selected.request(status, operation) == core.json_file(core.REQUEST, private=True),

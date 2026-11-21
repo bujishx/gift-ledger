@@ -146,6 +146,8 @@ const {
   restoreAcknowledged,
   restoreRenames,
   safetyBackupToken,
+  restoreReceipts,
+  hasOlderReceipts,
 } = toRefs(props.state);
 const {
   saveMyProfile,
@@ -512,9 +514,19 @@ function onDictionaryMenu(item, action) {
         type="button"
         class="outline link-button"
         :disabled="busy"
-        @click="actions.downloadSafetyBackup"
+        @click="actions.downloadSafetyBackup()"
         >下载上次恢复前安全备份</button
       >
+      <button type="button" class="outline link-button" :disabled="busy" @click="actions.lookupRestoreReceipts()">查询最近的恢复回执</button>
+      <div v-if="Array.isArray(restoreReceipts)" role="status">
+        <p v-if="!restoreReceipts.length">没有可查询的恢复回执。</p>
+        <div v-for="receipt in restoreReceipts" :key="receipt.receipt_id" class="me-selected-file">
+          <p>{{ stamp(receipt.restored_at) }} 恢复成功，已恢复 {{ receipt.counts.contacts }} 位联系人、{{ receipt.counts.events }} 个事件、{{ receipt.counts.gifts }} 笔流水。</p>
+          <button v-if="receipt.safety_backup_token" type="button" class="outline link-button" :disabled="busy" @click="actions.downloadSafetyBackup(receipt.safety_backup_token)">下载此次恢复前安全备份</button>
+          <p>安全备份有效至 {{ stamp(receipt.safety_backup_expires_at) }}</p>
+        </div>
+        <button v-if="hasOlderReceipts" type="button" class="text-button" :disabled="busy" @click="actions.lookupRestoreReceipts(restoreReceipts.at(-1).receipt_id)">查询更早回执</button>
+      </div>
       <label class="field">
         <span class="field-label">选择 .giftledger 备份文件</span>
         <input

@@ -227,6 +227,7 @@ services:
       GIFTLEDGER_MAINTENANCE_DIR: /run/giftledger-maintenance
       GIFTLEDGER_OWNER_STATE_DIR: /run/giftledger-owner
       GIFTLEDGER_LOGIN_LOCK_DIR: /var/lib/gift-ledger
+      GIFTLEDGER_AUTH_GATEWAY: web
     entrypoint:
       - /bin/sh
       - -ec
@@ -236,7 +237,7 @@ services:
         export GIFT_LEDGER_TRUSTED_ORIGINS="$$origin"
         exec /opt/venv/bin/python3.12 /app/deploy/api_entrypoint.py "$$@"
       - gift-ledger-api
-    command: [python3.12, -m, uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --proxy-headers, --workers, "1"]
+    command: [python3.12, -m, uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --no-proxy-headers, --workers, "1"]
     volumes:
       - "${GIFTLEDGER_SITE_DIR:-.}/data/app_secrets:/run/secrets:ro"
       - "${GIFTLEDGER_SITE_DIR:-.}/data/app_data:/var/lib/gift-ledger"

@@ -172,7 +172,10 @@ def test_partial_event_can_edit_remark_and_complete_same_known_parts(monkeypatch
         event_date=None,
         remark="旧账",
     )
-    update_event(session, 1, 10, **base, fields={"remark"})
+    from app.services.ledger_records import event_revision
+
+    update_event(session, 1, 10, **base, fields={"remark"}, expected_revision=event_revision(event))
+    base["expected_revision"] = event_revision(event)
     assert date_value(event).precision == "month" and event.event_date is None
     with pytest.raises(LedgerValidationError) as error:
         update_event(

@@ -37,7 +37,7 @@ from app.services.ledger import (
     derive_direction,
     validate_gift_value,
 )
-from app.services.ledger_records import _locked_event_by_id
+from app.services.ledger_records import _locked_event_by_id, event_revision
 from app.services.profile import get_self_contact
 
 
@@ -302,6 +302,7 @@ def list_events(
             EventListItemResponse(
                 event=EventResponse(
                     id=event.id,
+                    revision=event_revision(event),
                     host=LedgerContactResponse(id=host.id, name=host.name),
                     kinship_type=LedgerDictionaryResponse(id=kinship.id, name=kinship.type_name),
                     event_type=LedgerDictionaryResponse(

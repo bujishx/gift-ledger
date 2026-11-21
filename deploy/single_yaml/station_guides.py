@@ -32,6 +32,7 @@ def retirement(project, origin, instance, project_dir, site_dir, config_file):
     host = f"/root/.giftledger-maintenance/{project}"
     service = f"giftledger-maintenance-{project}.service"
     cert = f"giftledger-certificate-{project}"
+    alerts = f"giftledger-backup-alert-{project}"
     snapshot = f"""(
 set -eu
 {discover}
@@ -117,7 +118,7 @@ YAML　{config or '见第 1 步的“YAML”。'}
 请在已约好的退站时间操作。最后一次备份完成后，暂停本站网页入口（仅停止本项目的 web 容器），再核对本站没有未完成或等待收尾的任务。这样不会在退站中途接到新的网页请求。
 
 群晖
-• 控制面板 → 任务计划。打开手动备份、HTTPS 续签、网页维护开机等任务的任务设置，逐条核对脚本内写的项目和实际目录。先停用并确认没有任务在运行，再删除属于本站的那几条任务。管理员改过的任务名称也要检查。
+• 控制面板 → 任务计划。打开手动备份、备份提醒、HTTPS 续签、网页维护开机等任务的任务设置，逐条核对脚本内写的项目和实际目录。先停用并确认没有任务在运行，再删除属于本站的那几条任务。管理员改过的任务名称也要检查。
 • 已启用网页维护时，开机任务停止后，原有维护进程可能仍在运行。在 root 终端输入下面的只读命令，它会按完整启动参数和安装记录查找本站进程。若有唯一匹配，确认状态空闲后执行 kill -TERM 实际PID，替换“实际PID”为刚核对的数字。再运行同一条查询，直到不再显示。若服务器已重启且本站开机任务已停用，则通常没有这条进程。
 
 {dsm_worker}
@@ -125,13 +126,13 @@ YAML　{config or '见第 1 步的“YAML”。'}
 Ubuntu
 • 检查自己为本站建立的 cron 或额外定时任务，按脚本中的项目和目录辨认、停用后删除。在启用过新版网页维护的站，用下列命令查看本站生成的三个 systemd 定义。核对其中的项目、路径及实例绑定。未安装网页维护的站可以直接进入第 3 步。
 
-systemctl cat {service} {cert}.timer {cert}.service
+systemctl cat {service} {cert}.timer {cert}.service {alerts}.timer {alerts}.service
 
 • 确认续签服务没有在执行、维护页没有进行中的或待收尾操作后，停止并禁用本站的定时器和维护服务，移除已核实的三个专属单元定义。以下命令以 root 执行。系统管理员自行添加的覆盖文件请用 systemctl cat 显示的路径逐一审阅。
 
-systemctl disable --now {cert}.timer {service}
-systemctl stop {cert}.service
-rm -i -- /etc/systemd/system/{service} /etc/systemd/system/{cert}.timer /etc/systemd/system/{cert}.service
+systemctl disable --now {cert}.timer {alerts}.timer {service}
+systemctl stop {cert}.service {alerts}.service
+rm -i -- /etc/systemd/system/{service} /etc/systemd/system/{cert}.timer /etc/systemd/system/{cert}.service /etc/systemd/system/{alerts}.timer /etc/systemd/system/{alerts}.service
 systemctl daemon-reload
 
 3　删除本站项目和目录

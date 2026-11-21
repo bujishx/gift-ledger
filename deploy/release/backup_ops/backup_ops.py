@@ -967,6 +967,22 @@ def installation_notes(profile_path, profile):
     )
 
 
+def private_worker_resources():
+    """Bound a single job's private memory while keeping headroom for the host and MySQL."""
+    try:
+        with open("/proc/meminfo", encoding="ascii") as meminfo:
+            line = next(line for line in meminfo if line.startswith("MemAvailable:"))
+        available = int(line.split()[1]) // 1024
+    except (OSError, StopIteration, ValueError, IndexError):
+        raise BackupOpsError("maintenance_memory_unavailable") from None
+    reserve = max(256, available // 3)
+    scratch = min(1536, available - reserve - 192)
+    require(scratch >= 64, "maintenance_memory_headroom_low")
+    limit = str(scratch + 192) + "m"
+    return ["--memory", limit, "--memory-swap", limit, "--tmpfs",
+            "/tmp:rw,noexec,nosuid,nodev,mode=1777,size=" + str(scratch) + "m"]
+
+
 class Worker:
     def _volume_name(self, role):
         """Ordinary backups always use the site's original named volumes.
@@ -1072,8 +1088,7 @@ class Worker:
             "--network",
             "none",
             "--read-only",
-            "--memory",
-            "768m",
+            *private_worker_resources(),
             "--user",
             "0:0",
             "--cap-drop",
@@ -1087,8 +1102,6 @@ class Worker:
             "--security-opt",
             "no-new-privileges:true",
             "--tmpfs",
-            "/tmp:rw,noexec,nosuid,nodev,size=128m",
-            "--tmpfs",
             "/var/lib/mysql:rw,noexec,nosuid,nodev,size=16m",
             "--log-driver",
             "json-file",
@@ -1100,6 +1113,8 @@ class Worker:
             "PYTHONDONTWRITEBYTECODE=1",
             "--env",
             "PYTHONUNBUFFERED=1",
+            "--env",
+            "GIFTLEDGER_BACKUP_DESTINATION_FREE_BYTES=" + str(shutil.disk_usage(profile["store_dir"]).free),
         ]
         args.extend(self._mount_arguments(run_dir))
         args.extend(
@@ -1458,7 +1473,7 @@ def run(
             )
             record["worker_id"] = worker.container_id
             save_run(journal_path, record, "worker-created")
-            ready = worker.receive("ready")
+            ready = worker.receive("ready", timeout=2400)
             leased = True
             cleanup_only = bool(ready.get("session_completed"))
             check_worker_status(profile, ready["status"])
@@ -1579,6 +1594,12 @@ def run(
             # Consumers may rely on both files after seeing 'finished'. Publish the receipt
             # first so a power loss before that point leaves the same session resumable.
             save_run(journal_path, record, "finished")
+            if site_bindings is not None and manifest and not record["private_cleanup_pending"]:
+                # Keep success independently of the last attempt, including after a later failure.
+                save_json(state / "last-verified-backup.json", {
+                    **{k: profile[k] for k in ("project", "instance_id", "server_uuid")},
+                    "last": {"state": "verified", "at": manifest["completed_at"], "backup_id": record["bundle_id"]},
+                })
             # Persist a new site's very first success independently of web/DSM schedule/host sampling.
             # If this is an upgrade, the dispatcher imports the original first result from older journals.
             first_path = state / "first-verified-backup.json"
@@ -1639,6 +1660,9 @@ def run(
                     "needs_recovery": needs_recovery,
                 },
             )
+            if isinstance(error, BackupOpsError) and not needs_recovery:
+                # The persisted coordinator journal proves no service stop or lease occurred.
+                error.preflight_only = True
             raise
         finally:
             if worker:
@@ -1738,16 +1762,13 @@ def audit_external(profile, bundle_dir, *, origin="copy", docker=None):
             "--network",
             "none",
             "--read-only",
-            "--memory",
-            "768m",
+            *private_worker_resources(),
             "--user",
             "0:0",
             "--cap-drop",
             "ALL",
             "--security-opt",
             "no-new-privileges:true",
-            "--tmpfs",
-            "/tmp:rw,noexec,nosuid,nodev,size=128m",
             "--tmpfs",
             "/var/lib/mysql:rw,noexec,nosuid,nodev,size=16m",
             "--log-driver",

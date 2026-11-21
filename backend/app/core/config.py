@@ -39,6 +39,11 @@ class Settings(BaseSettings):
         ge=1024,
         le=50 * 1024 * 1024,
     )
+    personal_restore_max_uncompressed_bytes: int = Field(
+        default=50 * 1024**2, ge=1024, le=200 * 1024**2
+    )
+    personal_restore_max_records: int = Field(default=100_000, ge=1, le=400_000)
+    personal_restore_max_compression_ratio: int = Field(default=200, ge=1, le=1100)
     personal_safety_backup_dir: Path = BACKEND_DIR / ".runtime" / "personal-safety-backups"
     personal_safety_backup_ttl_hours: int = Field(default=24, ge=1, le=168)
     admin_backup_dir: Path = BACKEND_DIR / ".runtime" / "admin-backups"

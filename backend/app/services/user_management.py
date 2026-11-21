@@ -15,6 +15,7 @@ from app.db.models import (
     User,
 )
 from app.services.auth import create_user
+from app.services.business_sessions import revoke_user_sessions
 
 
 class UserNotFoundError(ValueError):
@@ -95,6 +96,8 @@ def set_user_active(
         if user is None or (expected_id is not None and user.id != expected_id):
             raise UserNotFoundError
         user.is_active = int(is_active)
+        if not is_active:
+            revoke_user_sessions(session, user.id)
         session.flush()
         session.commit()
         return user
@@ -117,3 +120,4 @@ def delete_empty_account(session: Session, username: str, expected_id: int) -> N
         )
         if result.rowcount != 1:
             raise AccountHasDataError
+        revoke_user_sessions(session, user.id)

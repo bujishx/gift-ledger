@@ -1,3 +1,5 @@
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -209,11 +211,53 @@ def get_gift_detail(session: Session, user_id: int, gift_id: int) -> GiftDetailV
     )
 
 
+def _content_revision(*values) -> str:
+    payload = json.dumps(values, ensure_ascii=False, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def event_revision(event: EventRecord) -> str:
+    return _content_revision(
+        event.id,
+        event.user_id,
+        event.contact_id,
+        event.relative_type_id,
+        event.event_type_id,
+        event.event_date,
+        event.date_precision,
+        event.event_year,
+        event.event_month,
+        event.date_source,
+        event.remark,
+    )
+
+
+def gift_revision(gift: GiftRecord) -> str:
+    return _content_revision(
+        gift.id,
+        gift.user_id,
+        gift.event_record_id,
+        gift.contact_id,
+        gift.amount,
+        gift.gift_details,
+        gift.remark,
+    )
+
+
+def _require_revision(expected: str | None, actual: str) -> None:
+    if expected != actual:
+        raise LedgerValidationError(
+            "LEDGER_REVISION_CONFLICT",
+            "这份资料已更新或来自旧版页面。本次修改未保存，请重新打开最新资料并核对。",
+        )
+
+
 def _locked_event_by_id(session: Session, user_id: int, event_id: int) -> EventRecord:
     event = session.scalar(
         select(EventRecord)
         .where(EventRecord.id == event_id, EventRecord.user_id == user_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if event is None:
         raise EventNotFoundError
@@ -225,6 +269,7 @@ def _locked_gift_by_id(session: Session, user_id: int, gift_id: int) -> GiftReco
         select(GiftRecord)
         .where(GiftRecord.id == gift_id, GiftRecord.user_id == user_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if gift is None:
         raise GiftNotFoundError
@@ -278,6 +323,7 @@ def update_event(
     event_date: date | None,
     remark: str | None,
     fields: set[str],
+    expected_revision: str | None,
 ) -> EventRecord:
     allowed_fields = {
         "host_contact_id",
@@ -305,6 +351,7 @@ def update_event(
     try:
         _lock_active_user(session, user_id)
         event = _locked_event_by_id(session, user_id, event_id)
+        _require_revision(expected_revision, event_revision(event))
 
         target_host_id = host_contact_id if "host_contact_id" in fields else event.contact_id
         target_kinship_id = (
@@ -458,6 +505,7 @@ def update_gift(
     gift_details: str | None,
     remark: str | None,
     fields: set[str],
+    expected_revision: str | None,
 ) -> GiftUpdateResult:
     allowed_fields = {"giver_contact_id", "amount", "gift_details", "remark"}
     if not fields:
@@ -474,6 +522,7 @@ def update_gift(
     try:
         _lock_active_user(session, user_id)
         gift = _locked_gift_by_id(session, user_id, gift_id)
+        _require_revision(expected_revision, gift_revision(gift))
         event = _locked_event_by_id(session, user_id, gift.event_record_id)
         self_contact = _self_contact(session, user_id)
         target_event_id = event.id
@@ -563,6 +612,7 @@ def delete_gift(session: Session, user_id: int, gift_id: int) -> None:
 def event_response(view: EventView) -> EventResponse:
     return EventResponse(
         id=view.event.id,
+        revision=event_revision(view.event),
         host=LedgerContactResponse(id=view.host_contact.id, name=view.host_contact.name),
         kinship_type=LedgerDictionaryResponse(
             id=view.kinship_type.id,
@@ -581,6 +631,7 @@ def event_response(view: EventView) -> EventResponse:
 def gift_response(view: GiftView) -> GiftResponse:
     return GiftResponse(
         id=view.gift.id,
+        revision=gift_revision(view.gift),
         giver=LedgerContactResponse(id=view.giver_contact.id, name=view.giver_contact.name),
         amount=view.gift.amount,
         gift_details=view.gift.gift_details,

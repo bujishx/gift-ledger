@@ -128,7 +128,7 @@ def get_current_user(
             {"WWW-Authenticate": "Cookie"},
         ) from exc
 
-    user = get_active_user(session, claims.user_id)
+    user = get_active_user(session, claims.user_id, session_id=claims.session_id)
     if user is None or not access_token_matches_password(
         claims,
         user.password_hash,

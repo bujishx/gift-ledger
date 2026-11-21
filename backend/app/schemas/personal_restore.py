@@ -73,6 +73,14 @@ class PersonalRestoreConfirmResponse(BaseModel):
     reauth_required: bool
 
 
+class PersonalRestoreReceipt(BaseModel):
+    receipt_id: int
+    restored_at: datetime
+    safety_backup_expires_at: datetime
+    safety_backup_token: str | None
+    counts: PersonalRestoreCounts
+
+
 __all__ = [
     "PersonalRestoreConfirmRequest",
     "PersonalRestoreConfirmResponse",

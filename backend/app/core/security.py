@@ -10,6 +10,8 @@ from pwdlib import PasswordHash
 from pwdlib.exceptions import PwdlibError
 from pydantic import SecretStr
 
+from app.services.registration_limits import uses_password_budget
+
 JWT_ALGORITHM = "HS256"
 JWT_ISSUER = "gift-ledger"
 JWT_AUDIENCE = "gift-ledger-web"
@@ -61,6 +63,7 @@ class AccessTokenClaims:
     user_id: int
     password_version: str
     session_id: str
+    expires_at: int
 
 
 def normalize_username(username: str) -> str:
@@ -83,10 +86,12 @@ def validate_new_password(password: str) -> None:
         raise PasswordPolicyError("PASSWORD_TOO_WEAK", "该密码过于常见，请换一个不容易猜到的密码")
 
 
+@uses_password_budget
 def hash_password(password: str) -> str:
     return password_hasher.hash(password)
 
 
+@uses_password_budget
 def verify_password(password: str, password_hash: str) -> bool:
     try:
         return password_hasher.verify(password, password_hash)
@@ -164,6 +169,7 @@ def decode_access_token(token: str, secret: SecretStr | None) -> AccessTokenClai
             user_id=user_id,
             password_version=password_state,
             session_id=session_id,
+            expires_at=int(payload["exp"]),
         )
     except SecurityConfigurationError:
         raise

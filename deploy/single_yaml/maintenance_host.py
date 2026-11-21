@@ -527,7 +527,10 @@ def consume(state, config, handles, operation, expected_station, key_image=None)
         value = verified_result(config, handles, operation, bundle, previous, archive, claim["engine_session"])
     except Exception as exc:
         code = machine_code(exc, "backup_failed" if started else "host_preflight_failed")
-        stage = "needs_review" if started or code == "previous_backup_requires_review" else "failed"
+        preflight_capacity = (getattr(exc, "preflight_only", False) is True and code in {
+            "backup_private_workspace_too_small", "backup_destination_space_low",
+            "maintenance_memory_headroom_low", "maintenance_memory_unavailable"})
+        stage = "needs_review" if (started and not preflight_capacity) or code == "previous_backup_requires_review" else "failed"
         value = result(config, operation, stage, code)
     save(state, handles, value)
     return value
@@ -697,7 +700,8 @@ def key_state_revision(cfg):
             require(identity(os.fstat(root)) == cfg["station_inode"], "station_identity_changed")
             with directories(Path(".giftledger-backup-state"), root) as folder:
                 stamps = []
-                for name in ("site.json", "key-label.json", "key-change.json", "last-result.json"):
+                for name in ("site.json", "key-label.json", "key-change.json", "last-result.json",
+                             "last-failed-backup-attempt.json"):
                     try:
                         info = os.stat(name, dir_fd=folder, follow_symlinks=False)
                         stamps.append((info.st_ino, info.st_mtime_ns))
@@ -773,15 +777,16 @@ def key_observation(cfg, root, owned_file, time_field):
     return result
 
 
-def first_verified_backup(root, entry, owned_file, time_field):
+def first_verified_backup(root, entry, owned_file, time_field, *, latest=False):
     state = ".giftledger-backup-state"
     binding = {k: entry[k] for k in ("project", "instance_id", "server_uuid")}
-    receipt = "first-verified-backup.json"
+    field = "last" if latest else "first"
+    receipt = field + "-verified-backup.json"
     try:
         prior = json.loads(owned_file(state, receipt, 4096))
-        require(all(prior[k] == v for k, v in binding.items()) and prior["first"]["state"] == "verified",
+        require(all(prior[k] == v for k, v in binding.items()) and prior[field]["state"] == "verified",
                 "foreign_first_backup")
-        return prior["first"]
+        return prior[field]
     except FileNotFoundError:
         pass
     try:
@@ -822,13 +827,65 @@ def first_verified_backup(root, entry, owned_file, time_field):
         return {"state": "none" if complete else "unknown"}
     result = {"state": "verified"}
     if complete and all(moment for moment, _ in verified):
-        moment, bid = min(verified)
+        moment, bid = max(verified) if latest else min(verified)
         result.update(at=moment, backup_id=bid)
-    if complete:
+    if complete and not latest:
         # One-time legacy backfill. Normal retention deletes ciphertext, never this site-bound receipt.
         with directories(Path(state), root) as directory:
             publish(directory, receipt, encoded(dict(binding, first=result)))
     return result
+
+
+BACKUP_ALERT_DAYS = 7
+
+
+def backup_alert_settings(state):
+    try:
+        with directories(state) as folder:
+            size = os.stat("backup-alerts.json", dir_fd=folder, follow_symlinks=False).st_size
+            require(0 < size <= 4096, "invalid_backup_alert_settings")
+            raw = read_at(folder, "backup-alerts.json", size, expected_uid=0)
+        settings = json.loads(raw)
+    except FileNotFoundError:
+        return {"days": BACKUP_ALERT_DAYS, "heartbeat": ""}
+    require(isinstance(settings, dict) and type(settings.get("days")) is int and
+            1 <= settings["days"] <= 365 and isinstance(settings.get("heartbeat"), str), "invalid_backup_alert_settings")
+    return settings
+
+
+def backup_health(data, last, web, days, now):
+    """Joined host receipts, with separate freshness and last-attempt signals."""
+    def instant(value):
+        if isinstance(value, str):
+            try:
+                moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if moment.tzinfo is not None and moment <= now:
+                    return moment
+            except ValueError:
+                pass
+        return None
+
+    verified = instant(last.get("at"))
+    attempted = instant(data.get("backup_checked_at"))
+    if data.get("backup_state") == "succeeded" and data.get("decryption_verified") is True and attempted:
+        verified = max(verified, attempted) if verified else attempted
+    issues = []
+    engine_failed = data.get("backup_state") in ("failed", "needs_review")
+    web_failed = web.get("state") in ("failed", "needs_review")
+    early = instant(data.get("failed_attempt_at"))
+    observed = instant(web.get("observed_at"))
+    if (engine_failed and (not verified or not attempted or attempted >= verified)) or (
+            web_failed and observed and (not verified or observed >= verified)) or (
+            early and (not verified or early > verified)):
+        issues.append("failed")
+    if verified:
+        if (now - verified).total_seconds() >= days * 86400:
+            issues.append("overdue")
+    elif last.get("state") == "none":
+        issues.append("never")
+    else:
+        issues.append("unknown")
+    return {"days": days, "last_verified_at": verified.isoformat() if verified else None, "issues": issues}
 
 
 def sample_owner_site(cfg, root):
@@ -848,7 +905,7 @@ def sample_owner_site(cfg, root):
         if isinstance(value, str) and len(value) <= 40:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
             if parsed.tzinfo is not None:
-                return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+                return parsed.astimezone(timezone.utc).isoformat()
         return None
 
     try:
@@ -902,6 +959,31 @@ def sample_owner_site(cfg, root):
                     data["decryption_verified"] = False
     except (HostError, KeyError, OSError, TypeError, ValueError):
         pass
+    latest = {"state": "unknown"}
+    if data["backup_key"]["state"] == "unregistered":
+        latest = {"state": "none"}
+    elif data["backup_key"]["state"] == "registered":
+        try:
+            entry = json.loads(owned_file(state, "site.json", 4096))
+            require((entry["project"], entry["instance_id"]) == (cfg["project"], cfg["instance"]), "foreign_site")
+            try:
+                failed = json.loads(owned_file(state, "last-failed-backup-attempt.json", 4096))
+                if all(failed[key] == entry[key] for key in ("project", "instance_id", "server_uuid")):
+                    data["failed_attempt_at"] = time_field(failed.get("attempted_at"))
+            except (FileNotFoundError, KeyError, TypeError, ValueError):
+                pass
+            latest = first_verified_backup(root, entry, owned_file, time_field, latest=True)
+        except (HostError, KeyError, OSError, TypeError, ValueError):
+            pass
+    observation = {}
+    try:
+        item = json.loads(owned_file(IPC + "/status", "backup-observation.json", 4096))
+        if item.get("project") == cfg["project"]:
+            observation = item
+    except (HostError, KeyError, OSError, TypeError, ValueError):
+        pass
+    data["backup_health"] = backup_health(data, latest, observation,
+                                          cfg.get("backup_alert_days", BACKUP_ALERT_DAYS), datetime.now(timezone.utc))
     try:
         binary = ("/var/packages/ContainerManager/target/usr/bin/docker"
                   if cfg.get("platform", "dsm") == "dsm" else str(ubuntu_docker()))
@@ -973,7 +1055,8 @@ def serve(state, wait, once, expected_station=None, key_enrollment=False, key_im
                     next_key_check = time.monotonic() + 3
                 if persistent and key_enrollment and time.monotonic() >= next_sample:
                     try:
-                        publish(handles["status"], "overview.json", encoded(owner_snapshot(cfg)))
+                        settings = backup_alert_settings(state)
+                        publish(handles["status"], "overview.json", encoded(owner_snapshot(dict(cfg, backup_alert_days=settings["days"]))))
                     except (HostError, OSError, ValueError, TypeError, KeyError, OverflowError):
                         pass
                     next_sample = time.monotonic() + 120

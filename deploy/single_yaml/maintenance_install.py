@@ -3,6 +3,8 @@ import argparse
 import contextlib
 import fcntl
 import hashlib
+import getpass
+import http.client
 import io
 import json
 import os
@@ -19,6 +21,7 @@ import tarfile
 import tempfile
 import time
 import zipfile
+from urllib.parse import urlsplit
 
 import maintenance_host as host
 import owner_login_code as owner
@@ -413,6 +416,20 @@ def service(project):
     return "giftledger-maintenance-" + project + ".service"
 
 
+def backup_alert_units(root, project):
+    name = "giftledger-backup-alert-" + project
+    return {
+        name + ".service": (
+            "[Unit]\nDescription=Check GiftLedger backup health\nAfter=network-online.target\n"
+            "[Service]\nType=oneshot\nExecStart=" + site_command(root, "check-backup") +
+            " --scheduled\nTimeoutStartSec=120\nNoNewPrivileges=yes\n").encode(),
+        name + ".timer": (
+            "[Unit]\nDescription=Check GiftLedger backup health every 15 minutes\n"
+            "[Timer]\nOnCalendar=*:0/15\nPersistent=true\n"
+            "[Install]\nWantedBy=timers.target\n").encode(),
+    }
+
+
 def unit_files(root, record):
     state, image, p = root / "state", record["image"], record["project"]
     worker = command([PYTHON, "-I", root / WORKER, "systemd-unit", "--state", state, "--key-image", image])
@@ -428,6 +445,7 @@ def units(root, record):
     p = record["project"]
     cert = "giftledger-certificate-" + p
     files = unit_files(root, record)
+    files.update(backup_alert_units(root, p))
     host.trusted_chain(UNIT_DIR)
     for name, data in files.items():
         same_file(UNIT_DIR / name, data, 0o644)
@@ -437,6 +455,7 @@ def units(root, record):
         dropins = command([SYSTEMCTL, "show", "--property=DropInPaths", "--value", name], text=True)
         need(loaded == str(UNIT_DIR / name) and not dropins, "systemd_unit_definition_changed")
     command([SYSTEMCTL, "enable", "--now", cert+".timer"])
+    command([SYSTEMCTL, "enable", "--now", "giftledger-backup-alert-" + p + ".timer"])
     command([SYSTEMCTL, "enable", service(p)])
 
 
@@ -559,6 +578,88 @@ def status(root, record):
     return info
 
 
+ALERT_MESSAGES = {"failed": "最近的整站备份失败，请在内网维护页查看回执。",
+                  "overdue": "已达到设定的最长无成功备份时间，请安排备份。",
+                  "never": "本站尚无通过实际解密核验的整站备份。",
+                  "unknown": "无法确认最近的成功备份，请检查本站维护状态。",
+                  "delivery": "站外监测未确认收到本次状态，请检查监测地址与网络。"}
+
+
+def heartbeat_url(value):
+    if not value:
+        return None
+    parts = urlsplit(value)
+    need(len(value) <= 2048 and value.isascii() and not any(ord(c) <= 32 or ord(c) == 127 for c in value)
+         and parts.scheme == "https" and parts.hostname and not parts.username and not parts.password
+         and parts.path not in ("", "/") and not parts.query and not parts.fragment
+         and parts.port in (None, 443), "invalid_heartbeat_url")
+    return parts
+
+
+def configure_backup_alerts(root):
+    need(sys.stdin.isatty() and sys.stderr.isatty(), "interactive_server_administrator_required")
+    state = root / "state"
+    settings = host.backup_alert_settings(state)
+    text = input("最长多少天没有成功整站备份时提醒（1–365，回车保留 %d 天）： " % settings["days"]).strip()
+    if text:
+        need(text.isascii() and text.isdigit() and 1 <= int(text) <= 365, "invalid_backup_alert_days")
+        settings["days"] = int(text)
+    value = getpass.getpass("站外监测 HTTPS 心跳地址（不回显；回车保留，输入 - 关闭）： ").strip()
+    if value:
+        settings["heartbeat"] = "" if value == "-" else value
+        heartbeat_url(settings["heartbeat"])
+    host.atomic_file(state / "backup-alerts.json", host.encoded(settings), 0o600)
+    print("本站备份提醒已保存。阈值 %d 天，站外监测%s。" %
+          (settings["days"], "已设置" if settings["heartbeat"] else "未设置"))
+
+
+def send_heartbeat(value, failed):
+    parts = heartbeat_url(value)
+    if parts:
+        destination = parts.path.rstrip("/") + "/fail" if failed else parts.path
+        conn = http.client.HTTPSConnection(parts.hostname, timeout=8)
+        try:
+            conn.request("POST", destination, body=b"")
+            if not 200 <= conn.getresponse().status < 300:
+                raise OSError("heartbeat_delivery_failed")
+        finally:
+            conn.close()
+
+
+def check_backup_alerts(root, scheduled):
+    state = root / "state"
+    settings = host.backup_alert_settings(state)
+    cfg = dict(host.read_config(state), backup_alert_days=settings["days"])
+    try:
+        health = host.owner_snapshot(cfg)["backup_health"]
+    except (OSError, TypeError, KeyError, ValueError, host.HostError):
+        health = {"issues": ["unknown"], "last_verified_at": None}
+    issues = list(health["issues"])
+    if settings["heartbeat"]:
+        try:
+            send_heartbeat(settings["heartbeat"], bool(issues))
+        except (OSError, ValueError, http.client.HTTPException, host.HostError):
+            issues.append("delivery")
+    # A scheduled DSM mail fires on a transition, and once a day if still outstanding.
+    if scheduled:
+        lock_path = state / "backup-alert-delivery.lock"
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "r+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            path = state / "backup-alert-last.json"
+            try:
+                old = json.loads(verified_bytes(path, 0o600))
+            except FileNotFoundError:
+                old = {}
+            now = int(time.time())
+            if old.get("issues") == issues and (not issues or 0 <= now - old.get("at", 0) < 86400):
+                return 0
+            host.atomic_file(path, host.encoded({"issues": issues, "at": now}), 0o600)
+    print(root.name + " 整站备份提醒 · " + (" ".join(ALERT_MESSAGES[k] for k in issues) if issues else "正常"))
+    print("最近成功核验：" + (health["last_verified_at"] or "未能确认") + "；提醒阈值 %d 天。" % settings["days"])
+    return 1 if issues else 0
+
+
 def run(args):
     need(os.geteuid() == 0 and sys.flags.isolated, "root_and_isolated_python_required")
     os.umask(0o077)
@@ -574,6 +675,11 @@ def run(args):
              "use_installed_site_tool")
         if args.action == "status":
             print(json.dumps(status(root, record), ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.action == "check-backup":
+            return check_backup_alerts(root, args.scheduled)
+        if args.action == "configure-backup-alerts":
+            configure_backup_alerts(root)
             return 0
         if args.action == "login-code":
             return subprocess.call([PYTHON, "-I", str(root / "owner_login_code.py"), "issue", "--project", args.project,
@@ -611,9 +717,11 @@ def run(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="安装本站宿主维护服务、查询离线回单或收尾原任务")
     commands = parser.add_subparsers(dest="action", required=True)
-    for action in ("install", "status", "login-code", "start", "review-backup", "review-enrollment", "review-restore", *KEY_ACTIONS):
+    for action in ("install", "status", "check-backup", "configure-backup-alerts", "login-code", "start", "review-backup", "review-enrollment", "review-restore", *KEY_ACTIONS):
         sub=commands.add_parser(action)
         sub.add_argument("--project", required=True)
+        if action=="check-backup":
+            sub.add_argument("--scheduled", action="store_true")
         if action=="install":
             for flag in ("station", "instance", "origin"):
                 sub.add_argument("--"+flag, required=True)
@@ -626,6 +734,8 @@ def main(argv=None):
         code = str(exc) if isinstance(exc, owner.RecoveryError) else host.machine_code(exc,"host_install_environment_invalid")
         help_text = {
             "operator_cancelled": "已退出本站管理员操作。",
+            "invalid_heartbeat_url": "请输入有效的 HTTPS 监测地址（443 端口，使用路径中的令牌）。",
+            "invalid_backup_alert_days": "提醒天数须为 1–365 的整数。",
             "interactive_server_administrator_required": "请在本站服务器交互式管理员终端运行这条命令。",
             "a_matching_backup_is_required": "请先做一份本站常规备份，再从维护页开始补领。",
             "matching_published_site_backup_required": "本站找不到该编号的已核验备份。可先运行常规备份，再用新编号补领。",

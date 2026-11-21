@@ -8,6 +8,7 @@ receive ciphertext and non-secret receipts only. Plaintext lives in tmpfs.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import importlib.util
 import json
@@ -19,6 +20,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import zlib
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -993,45 +996,71 @@ def run_tool(arguments, *, stdin=None, stdout=None, timeout=600):
     require(result.returncode == 0, "maintenance_subprocess_failed")
 
 
-def dump_database(work, context):
-    path = work / "database.sql"
+@contextmanager
+def mysql_stream(arguments, *, importing=False):
+    """Give the caller one pipe; always reap the child, including on disk exhaustion."""
+    with subprocess.Popen(arguments, stdin=subprocess.PIPE if importing else subprocess.DEVNULL,
+                          stdout=subprocess.DEVNULL if importing else subprocess.PIPE,
+                          stderr=subprocess.DEVNULL) as process:
+        timeout = threading.Timer(600, process.kill)
+        timeout.daemon = True
+        timeout.start()
+        pipe = process.stdin if importing else process.stdout
+        try:
+            yield pipe
+            pipe.close()
+            require(process.wait() == 0, "maintenance_subprocess_failed")
+        finally:
+            timeout.cancel()
+            if process.poll() is None:
+                process.kill()
+            pipe.close()
+
+
+def compressed_dump(work, context, destination=None):
+    """Measure or write exactly the gzip stream used by the existing .gladminbackup format."""
     defaults = mysql_defaults(work, context["passwords"]["mysql_root_password"])
+    digest = hashlib.sha256()
+    size = compressed = 0
+    compressor = zlib.compressobj(wbits=31)
     try:
-        with path.open("xb") as stream:
-            os.chmod(path, 0o600)
-            run_tool(
-                [
-                    "mysqldump",
-                    "--defaults-extra-file=" + str(defaults),
-                    "--protocol=SOCKET",
-                    "--single-transaction",
-                    "--quick",
-                    "--hex-blob",
-                    "--default-character-set=utf8mb4",
-                    "--no-tablespaces",
-                    "--set-gtid-purged=OFF",
-                    "--skip-triggers",
-                    "--skip-add-locks",
-                    "--routines=false",
-                    "--events=false",
-                    "--tz-utc",
-                    DATABASE,
-                ],
-                stdout=stream,
-            )
-        require(
-            0 < path.stat().st_size <= MAX_BYTES, "database_dump_empty_or_too_large"
-        )
-        return path
+        with mysql_stream(["mysqldump", "--defaults-extra-file=" + str(defaults), "--protocol=SOCKET",
+                           "--single-transaction", "--quick", "--hex-blob", "--default-character-set=utf8mb4",
+                           "--no-tablespaces", "--set-gtid-purged=OFF", "--skip-triggers", "--skip-add-locks",
+                           "--routines=false", "--events=false", "--tz-utc", DATABASE]) as source:
+            while block := source.read(1024**2):
+                size += len(block)
+                require(size <= MAX_BYTES, "database_dump_empty_or_too_large")
+                digest.update(block)
+                part = compressor.compress(block)
+                compressed += len(part)
+                if destination is not None:
+                    destination.write(part)
+            part = compressor.flush()
+            compressed += len(part)
+            if destination is not None:
+                destination.write(part)
+        require(size > 0, "database_dump_empty_or_too_large")
+        return size, digest.hexdigest(), compressed
     finally:
         defaults.unlink(missing_ok=True)
 
 
-def reject_client_directives(path):
-    pattern = re.compile(rb"^\s*(?:\\[!.]|(?:system|source)\s)", re.IGNORECASE)
-    with path.open("rb") as stream:
-        for line in stream:
-            require(not pattern.match(line), "sql_client_directive_forbidden")
+def backup_capacity(work, context):
+    """Take a read-only measurement before the coordinator can stop the website."""
+    with tempfile.TemporaryDirectory(dir=work) as directory:
+        _, _, compressed = compressed_dump(Path(directory), context)
+    # The freeze checks the exact included set again; previews that might be quarantined
+    # are conservatively counted without opening any of their private contents.
+    app_size = sum(path.lstat().st_size for path in APP_DATA.rglob("*") if not path.is_symlink() and path.is_file())
+    assets = sum((ASSETS / name).stat().st_size for name in (*context["legacy"].ASSET_DIGESTS, "SHA256SUMS"))
+    estimated = compressed + app_size + assets + 4 * 1024**2
+    # The largest phase holds the ciphertext, decrypted ZIP and checked members at once.
+    require(shutil.disk_usage(work).free >= 3 * estimated + 8 * 1024**2, "backup_private_workspace_too_small")
+    exchange_free = shutil.disk_usage(EXCHANGE).free
+    store_free = int(os.environ.get("GIFTLEDGER_BACKUP_DESTINATION_FREE_BYTES", exchange_free))
+    require(min(exchange_free, store_free) >= 2 * estimated + 32 * 1024**2, "backup_destination_space_low")
+    return estimated
 
 
 def age(arguments):
@@ -1300,6 +1329,8 @@ def verify_archive(path, work, context, *, extract=False):
         verify_archived_configuration(target, manifest, context)
         # Always fully extract and hash into tmpfs. No ZIP member is executed and
         # parse_admin_backup validates the inner compressed SQL size and digest.
+    if not extract:
+        shutil.rmtree(target)
     return manifest, target if extract else None
 
 
@@ -1462,7 +1493,6 @@ def backup(request, context, engine, work):
         FORMAT_NAME,
         FORMAT_VERSION,
         get_mysqldump_version,
-        gzip_file,
         new_backup_id,
         parse_admin_backup,
         write_admin_backup_package,
@@ -1473,15 +1503,16 @@ def backup(request, context, engine, work):
         verify_schema(engine, context, revision=request["schema_revision"])
         before = fingerprint(engine, context)
         files_before = application_files()
-        raw = dump_database(work, context)
+        compressed, package = work / "dump.sql.gz", work / "database.gladminbackup"
+        with compressed.open("xb") as destination:
+            os.chmod(compressed, 0o600)
+            sql_size, sql_sha, _ = compressed_dump(work, context, destination)
         frozen_guard(connection, context)
         require(
             fingerprint(engine, context) == before
             and application_files() == files_before,
             "backup_source_changed",
         )
-        compressed, package = work / "dump.sql.gz", work / "database.gladminbackup"
-        gzip_file(raw, compressed)
         manifest = {
             "format": FORMAT_NAME,
             "format_version": FORMAT_VERSION,
@@ -1492,14 +1523,15 @@ def backup(request, context, engine, work):
             "schema_revision": before["schema_revision"],
             "application_version": "1.5.0",
             "mysqldump_version": get_mysqldump_version("mysqldump", timeout=30),
-            "sql_sha256": file_sha(raw),
-            "sql_size": raw.stat().st_size,
+            "sql_sha256": sql_sha,
+            "sql_size": sql_size,
             "alembic_version": before["schema_revision"],
             "tables": {table: item["rows"] for table, item in before["tables"].items()},
         }
         write_admin_backup_package(
             manifest=manifest, gzip_sql_path=compressed, output_path=package
         )
+        compressed.unlink()
         parse_admin_backup(package)
         files = {
             "database.gladminbackup": package,
@@ -1628,6 +1660,7 @@ def decrypted_archive(request, work, context, *, extract=False):
     os.chmod(plaintext, 0o600)
     manifest, extracted = verify_archive(plaintext, work, context, extract=extract)
     archive_sha = file_sha(plaintext)
+    plaintext.unlink()
     if _RESTORE_INPUT is not None:
         _RESTORE_INPUT.check_archive(manifest, archive_sha)
     return manifest, extracted, archive_sha
@@ -1679,35 +1712,30 @@ def verify_backup(request, context, engine, work):
     }
 
 
-def extract_sql(extracted, work):
-    import gzip
-
-    from app.services.database_backup import parse_admin_backup
-
-    package = extracted / "database.gladminbackup"
-    metadata = parse_admin_backup(package)
-    target = work / "restore.sql"
-    with (
-        ZipFile(package) as archive,
-        archive.open("dump.sql.gz") as zipped,
-        gzip.GzipFile(fileobj=zipped) as source,
-        target.open("xb") as destination,
-    ):
-        os.chmod(target, 0o600)
-        count = 0
-        while block := source.read(1024**2):
-            count += len(block)
-            require(
-                count <= metadata.sql_size and count <= MAX_BYTES,
-                "restore_sql_overrun",
-            )
-            destination.write(block)
-    require(
-        count == metadata.sql_size and file_sha(target) == metadata.sql_sha256,
-        "restore_sql_digest_mismatch",
-    )
-    reject_client_directives(target)
-    return target
+def stream_sql(package, metadata, destination=None):
+    """Validate line starts and the complete dump in bounded memory before allowing any SQL."""
+    forbidden = re.compile(rb"^(?:\\[!.]|(?:system|source)\s)", re.IGNORECASE)
+    digest = hashlib.sha256()
+    size = 0
+    prefix = b""
+    looking = True
+    with ZipFile(package) as archive, archive.open("dump.sql.gz") as zipped, gzip.GzipFile(fileobj=zipped) as source:
+        # Extended INSERT lines can exceed one MiB. Only their first seven
+        # non-indentation bytes are needed to recognise a forbidden command.
+        while block := source.readline(64 * 1024):
+            size += len(block)
+            require(size <= metadata.sql_size and size <= MAX_BYTES, "restore_sql_overrun")
+            digest.update(block)
+            if looking:
+                text = block if prefix else block.lstrip()
+                prefix += text[:7-len(prefix)]
+                require(not forbidden.match(prefix), "sql_client_directive_forbidden")
+                looking = len(prefix) < 7
+            if block.endswith(b"\n"):
+                looking, prefix = True, b""
+            if destination is not None:
+                destination.write(block)
+    require(size == metadata.sql_size and digest.hexdigest() == metadata.sql_sha256, "restore_sql_digest_mismatch")
 
 
 def lock_application_account(connection):
@@ -1763,7 +1791,11 @@ def restore(request, context, engine, work):
         and (source_revision == "schema_v2_s011" or manifest["backup_type"] == "pre-maintenance"),
         "restore_source_mismatch_or_identical",
     )
-    sql = extract_sql(extracted, work)
+    from app.services.database_backup import parse_admin_backup
+
+    package = extracted / "database.gladminbackup"
+    metadata = parse_admin_backup(package)
+    stream_sql(package, metadata)
     target_configuration = {
         name: file_sha(SITE / relative) for name, relative in CONFIG_FILES.items()
     }
@@ -1797,18 +1829,9 @@ def restore(request, context, engine, work):
         connection.commit()
         defaults = mysql_defaults(work, imported_password, username=imported_user)
         try:
-            with sql.open("rb") as stream:
-                run_tool(
-                    [
-                        "mysql",
-                        "--defaults-extra-file=" + str(defaults),
-                        "--protocol=SOCKET",
-                        "--binary-mode",
-                        "--default-character-set=utf8mb4",
-                        DATABASE,
-                    ],
-                    stdin=stream,
-                )
+            with mysql_stream(["mysql", "--defaults-extra-file=" + str(defaults), "--protocol=SOCKET",
+                               "--binary-mode", "--default-character-set=utf8mb4", DATABASE], importing=True) as target:
+                stream_sql(package, metadata, target)
         finally:
             defaults.unlink(missing_ok=True)
         database_guard(
