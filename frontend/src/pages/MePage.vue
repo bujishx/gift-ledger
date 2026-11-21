@@ -161,9 +161,11 @@ const {
   logout,
 } = props.actions;
 
-const meSections = computed(() => ME_SECTIONS.filter(section => props.maintenanceAvailable || section.id !== 'restore'));
+function sectionUnavailable(id) {
+  return id === 'restore' && !props.maintenanceAvailable;
+}
 const activeSection = computed(() =>
-  meSection.value === 'restore' && !props.maintenanceAvailable ? 'data' : meSection.value
+  sectionUnavailable(meSection.value) ? 'data' : meSection.value
 );
 const error = computed(() => props.state.error || '');
 const notice = computed(() => props.state.notice || '');
@@ -172,7 +174,7 @@ function clearFeedback() {
   if ('notice' in props.state) props.state.notice = '';
 }
 function selectSection(id) {
-  if (busy.value) return;
+  if (busy.value || sectionUnavailable(id)) return;
   clearFeedback();
   meSection.value = id;
   if (id === 'import') props.actions.refreshImportBatches?.();
@@ -292,16 +294,17 @@ function onDictionaryMenu(item, action) {
 
     <div class="tab-strip subpage-tabs me-tabs" role="tablist" aria-label="我的子页">
       <button
-        v-for="section in meSections"
+        v-for="section in ME_SECTIONS"
         :key="section.id"
         type="button"
         role="tab"
         :aria-selected="activeSection === section.id"
         :class="{ selected: activeSection === section.id }"
-        :disabled="busy"
+        :disabled="busy || sectionUnavailable(section.id)"
         @click="selectSection(section.id)"
       >
         {{ section.label }}
+        <small v-if="sectionUnavailable(section.id)">仅限内网</small>
       </button>
     </div>
 

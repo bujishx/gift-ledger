@@ -25,6 +25,11 @@ x-site-port: &site-port "${GIFTLEDGER_HTTPS_PORT:-8443}"
 # 例如 https://ledger.example.com:51888。反向代理发给上游的 Host 应固定为外部域名及端口，
 # 例如 ledger.example.com:51888，转发目标为上方设置的内网 HTTPS 地址。站点维护仍使用内网 IP。
 x-reverse-proxy-origin: &reverse-proxy-origin "${GIFTLEDGER_REVERSE_PROXY_ORIGIN:-}"
+# 第 4 项的代理来源核验（可选）。专用代理填写准确的代理 IPv4。同机 DSM 通常使用密钥模式。
+# 在代理覆盖 X-Real-IP 为 $remote_addr。密钥模式还需覆盖 X-GiftLedger-Proxy-Key，详见安装说明。
+# 两项留空时公网登录仍有整站限速。请将真实密钥保存在本站 .env，切勿填入分享给他人的 YAML。
+x-reverse-proxy-ip: &reverse-proxy-ip "${GIFTLEDGER_REVERSE_PROXY_IP:-}"
+x-reverse-proxy-key: &reverse-proxy-key "${GIFTLEDGER_REVERSE_PROXY_KEY:-}"
 
 # ★ 常规安装只需核对上方的站点设置。
 # 以下为程序配置，常规安装请保留原值
@@ -221,6 +226,7 @@ services:
       GIFT_LEDGER_REVERSE_PROXY_ORIGIN: *reverse-proxy-origin
       GIFTLEDGER_MAINTENANCE_DIR: /run/giftledger-maintenance
       GIFTLEDGER_OWNER_STATE_DIR: /run/giftledger-owner
+      GIFTLEDGER_LOGIN_LOCK_DIR: /var/lib/gift-ledger
     entrypoint:
       - /bin/sh
       - -ec
@@ -260,6 +266,8 @@ services:
       GIFTLEDGER_SITE_IP: *site-ip
       GIFTLEDGER_HTTPS_PORT: *site-port
       GIFT_LEDGER_REVERSE_PROXY_ORIGIN: *reverse-proxy-origin
+      GIFTLEDGER_REVERSE_PROXY_IP: *reverse-proxy-ip
+      GIFTLEDGER_REVERSE_PROXY_KEY: *reverse-proxy-key
     ports:
       - target: 443
         published: *site-port

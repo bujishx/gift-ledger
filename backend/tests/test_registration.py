@@ -189,3 +189,30 @@ def test_login_and_invitation_rate_limit_http(site_access):
         denied = signup(client, "one_more", code="wrong")
         assert denied.status_code == 429 and int(denied.headers["Retry-After"]) > 0
         assert denied.json()["error"]["code"] == "INVITE_RATE_LIMITED"
+
+
+def test_busy_login_is_shared_across_entries_and_workers_without_charging_failures(
+    site_access, tmp_path, monkeypatch
+):
+    shared = tmp_path / "site-app-data"
+    shared.mkdir()
+    monkeypatch.setenv("GIFTLEDGER_LOGIN_LOCK_DIR", str(shared))
+    site_access.seed()
+    payload = {"username": "ledger_user", "password": site_access.old_password}
+    with site_access.client() as first, site_access.client() as second:
+        with first.app.state.registration_limits.password_check():
+            for client, origin in ((first, ORIGIN), (second, PUBLIC)):
+                busy = client.post(
+                    origin + AUTH + "/login", json=payload, headers={"Origin": origin}
+                )
+                assert busy.status_code == 429 and busy.headers["Retry-After"] == "1"
+                assert busy.json()["error"]["code"] == "LOGIN_BUSY"
+                assert not client.app.state.registration_limits.attempts["login"]
+            assert second.get(PUBLIC + AUTH + "/registration").status_code == 200
+        assert (
+            second.post(
+                PUBLIC + AUTH + "/login", json=payload, headers={"Origin": PUBLIC}
+            ).status_code
+            == 200
+        )
+    assert not list(shared.iterdir())

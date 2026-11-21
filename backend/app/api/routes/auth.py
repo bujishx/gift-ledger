@@ -51,7 +51,7 @@ from app.services.personal_safety_backup_store import (
     PersonalSafetyBackupStoreError,
 )
 from app.services.registration import InvalidInvitation, consume_invitation, read_policy
-from app.services.registration_limits import AttemptLimitReached
+from app.services.registration_limits import AttemptLimitReached, LoginBusy
 from app.services.sensitive_actions import (
     SensitiveActionError,
     import_plan_context,
@@ -172,7 +172,7 @@ def register(
     "/login",
     response_model=AccountResponse,
     summary="登录",
-    responses=ERROR_RESPONSES,
+    responses={**ERROR_RESPONSES, 429: {"model": ErrorResponse}},
 )
 def login(
     payload: CredentialsRequest,
@@ -183,11 +183,21 @@ def login(
     _trusted_origin: TrustedOriginDependency,
 ) -> AccountResponse:
     try:
-        with limited_check(
-            request, "login", payload.username.strip().lower(), AuthenticationFailedError
+        with (
+            request.app.state.registration_limits.password_check(),
+            limited_check(
+                request, "login", payload.username.strip().lower(), AuthenticationFailedError
+            ),
         ):
             user = authenticate_user(session, payload.username, payload.password)
         access_token = create_access_token(user.id, settings.jwt_secret, user.password_hash)
+    except LoginBusy as exc:
+        raise ApiError(
+            429,
+            "LOGIN_BUSY",
+            "登录验证繁忙，请稍后再试",
+            {"Retry-After": "1", "Cache-Control": "no-store"},
+        ) from exc
     except AuthenticationFailedError as exc:
         raise ApiError(
             status.HTTP_401_UNAUTHORIZED,

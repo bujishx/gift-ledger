@@ -5,6 +5,45 @@ import { createServer } from 'vite';
 import { createSSRApp, reactive } from 'vue';
 import { renderToString } from 'vue/server-renderer';
 import { readMaintenanceAccess } from '../src/lib/siteAccess.js';
+import { loadSiteAbout } from '../public/maintenance/site-info.js';
+
+test('all three About views place the public repository below the version', async t => {
+  function node(tag) {
+    return {
+      tag, children: [], classList: { add() {} },
+      append(...children) { this.children.push(...children); },
+      replaceChildren(...children) { this.children = children; },
+      setAttribute(name, value) { this[name] = value; },
+    };
+  }
+  globalThis.document = {
+    createElement: node,
+    createElementNS: (_, tag) => node(tag),
+  };
+  t.after(() => { delete globalThis.document; });
+  const fetch = t.mock.method(globalThis, 'fetch');
+  for (const [endpoint, info] of [
+    ['/api/v1/site/about', { product: '往来有礼', version: '1.0' }],
+    ['/api/v1/site/about', { project: 'example-site', version: '1.0' }],
+    ['/api/v1/maintenance/about', { project: 'example-site', version: '1.0' }],
+  ]) {
+    fetch.mock.mockImplementation(async () => Response.json(info));
+    const container = node('div');
+    await loadSiteAbout(container, { endpoint });
+    const rows = container.children.find(el => el.tag === 'dl').children;
+    const labels = rows.map(row => row.children[0].textContent);
+    assert.deepEqual(labels.slice(0, 2), ['网站版本', 'GitHub 项目']);
+    const link = rows[1].children[1].children[0];
+    assert.equal(link.tag, 'a');
+    assert.equal(link.textContent, 'bujishx/gift-ledger');
+    assert.equal(link.href, 'https://github.com/bujishx/gift-ledger');
+    assert.equal(link.target, '_blank');
+    assert.match(link.rel, /noopener/);
+    assert.equal(link.children[0].children[0].href, '/maintenance/link-icons.svg#new-tab');
+    if (info.product) assert.equal(rows.length, 2);
+    else assert.equal(rows[labels.indexOf('本站项目')].children[1].children[0], 'example-site');
+  }
+});
 
 test('maintenance controls require a fresh positive response from the current entry', async t => {
   const fetch = t.mock.method(globalThis, 'fetch');
@@ -57,7 +96,13 @@ test('login, About and personal data render tools for the local entry only', asy
     const personalData = await render('/src/pages/MePage.vue', props);
     assert.match(personalData, /导出全部数据/);
     assert.equal(personalData.includes('下载个人账本备份'), maintenanceAvailable);
-    assert.equal(personalData.includes('备份恢复'), maintenanceAvailable);
+    const tabs = personalData.match(/<button\b[^>]*role="tab"[^>]*>[\s\S]*?<\/button>/g);
+    assert.equal(tabs.length, 4);
+    assert.match(tabs[1], /旧账导入/);
+    assert.match(tabs[2], /备份恢复/);
+    assert.match(tabs[3], /字典管理/);
+    assert.equal(tabs[2].includes('disabled'), !maintenanceAvailable);
+    assert.equal(tabs[2].includes('仅限内网'), !maintenanceAvailable);
     state.meSection = 'restore';
     Object.assign(state, { restoreFile: null, restorePreview: null, restoreAcknowledged: false, restoreRenames: [] });
     const restore = await render('/src/pages/MePage.vue', props);

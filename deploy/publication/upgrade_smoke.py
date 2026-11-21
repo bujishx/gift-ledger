@@ -78,7 +78,7 @@ def verify_ledger(browser, expected):
           "Ledger totals changed")
 
 
-def start_proxy(work, name, host, public_port, lan_port):
+def start_proxy(work, name, host, public_port, lan_port, proxy_key):
     folder = work / "proxy"
     folder.mkdir(mode=0o700)
     cert = folder / "cert.pem"
@@ -100,11 +100,19 @@ http {{
             proxy_pass https://127.0.0.1:{lan_port};
             proxy_set_header Host {host}:{public_port};
             proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-GiftLedger-Proxy-Key {proxy_key};
         }}
         location = /misconfigured-upstream {{
             proxy_pass https://127.0.0.1:{lan_port}/maintenance;
             proxy_set_header Host 127.0.0.1:{lan_port};
-            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-GiftLedger-Proxy-Key {proxy_key};
+        }}
+        location = /unverified-login {{
+            proxy_pass https://127.0.0.1:{lan_port}/api/v1/auth/login;
+            proxy_set_header Host {host}:{public_port};
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-GiftLedger-Proxy-Key "";
         }}
     }}
 }}
@@ -166,7 +174,8 @@ def upgrade(old_yaml):
         verify_ledger(lan, expected)
         check(json.loads(lan.request("/site-access.json")) == {"maintenance": True}, "Missing LAN entry")
         host = "ledger-upgrade.test"
-        container, public = start_proxy(work, name, host, public_port, lan_port)
+        proxy_key = secrets.token_hex(32)
+        container, public = start_proxy(work, name, host, public_port, lan_port, proxy_key)
         cleanup.callback(subprocess.run, ["docker", "rm", "-f", container], check=True)
         subprocess.run(["docker", "start", container], check=True)
         for attempt in range(20):
@@ -180,10 +189,13 @@ def upgrade(old_yaml):
         print("v1.8.1 upgraded, original account and ledger verified; public entry closed", flush=True)
 
         env["GIFTLEDGER_REVERSE_PROXY_ORIGIN"] = public.origin
+        env["GIFTLEDGER_REVERSE_PROXY_KEY"] = proxy_key
         start()
         public.request("/")
         check(json.loads(public.request("/site-access.json")) == {"maintenance": False}, "Unexpected public tools")
         public.request("/api/v1/auth/me", status=401)
+        rejected = json.loads(public.request("/unverified-login", credentials, status=403))
+        check(rejected["error"]["code"] == "LOGIN_PROXY_UNVERIFIED", "Unverified proxy accepted")
         check(public.api("auth/login", credentials)["id"] == account, "External login returned a different account")
         verify_ledger(public, expected)
         external_gift = add_gift(public, contact, "2025-02-20", "56.78", "域名记账")
