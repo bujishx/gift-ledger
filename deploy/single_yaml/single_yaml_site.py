@@ -125,6 +125,9 @@ def check_directory():
         public.update(owner_guide.public_name(identity["project"], identity["instance_id"], name)
                       for name in (ADDRESS, ROOT_CERTIFICATE, owner_guide.FILENAME))
         public.add(owner_guide.GUIDES)
+        # DSM creates this index beside an established station's documents.
+        if "@eaDir" in names and stat.S_ISDIR((DATA / "@eaDir").lstat().st_mode):
+            public.add("@eaDir")
     if names - (set(ROLES) | public):
         raise SiteError("所选数据目录还有其他文件，请选择本站专用的空目录")
     if not established:

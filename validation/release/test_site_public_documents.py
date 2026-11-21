@@ -84,6 +84,29 @@ class SiteDocuments(unittest.TestCase):
         with self.assertRaisesRegex(site.SiteError, "其他文件"):
             site.check_directory()
 
+    def test_reentry_preserves_real_dsm_index_only_for_an_established_site(self):
+        self.publish()
+        index_dir = self.data / "@eaDir"
+        index_dir.mkdir()
+        index_doc = index_dir / "metadata"
+        index_doc.write_bytes(b"synology")
+        site.check_directory()
+        self.assertEqual(index_doc.read_bytes(), b"synology")
+        (self.data / "root_config/layout/prepare-completed.json").unlink()
+        with self.assertRaisesRegex(site.SiteError, "其他文件"):
+            site.check_directory()
+
+    def test_dsm_index_name_cannot_mask_a_file_or_link(self):
+        self.publish()
+        index_dir = self.data / "@eaDir"
+        index_dir.write_bytes(b"foreign file")
+        with self.assertRaisesRegex(site.SiteError, "其他文件"):
+            site.check_directory()
+        index_dir.unlink()
+        index_dir.symlink_to(self.data / "app_data", target_is_directory=True)
+        with self.assertRaisesRegex(site.SiteError, "其他文件"):
+            site.check_directory()
+
     def test_rollback_preserves_owner_edits_and_refuses_extra_members(self):
         self.publish()
         doc = self.data / owner_guide.GUIDES / "安装前检查端口与网络.txt"
