@@ -1,8 +1,7 @@
-name: Candidate
+name: Isolated acceptance artifact
 on:
   push:
-  pull_request:
-  workflow_dispatch:
+    branches: [qa-artifact/v1.8.2.6]
 permissions:
   contents: read
 jobs:
@@ -18,6 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: 84fd541841c79b4c8eb5252e910b7f64b9fcc0ed
           path: checkout
           persist-credentials: false
       - name: Stage reviewed bytes
@@ -44,6 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: 84fd541841c79b4c8eb5252e910b7f64b9fcc0ed
           path: checkout
           persist-credentials: false
       - name: Assemble only the source files reviewed for this commit
@@ -54,7 +55,7 @@ jobs:
       - name: Offline recovery and backup ownership tests
         run: /usr/bin/python3 -m pytest -q -p no:cacheprovider validation/release
       - name: Build all five Linux/amd64 images
-        run: python3 deploy/publication/images.py build "$RUNNER_TEMP/candidate" --commit "$GITHUB_SHA"
+        run: python3 deploy/publication/images.py build "$RUNNER_TEMP/candidate" --commit "84fd541841c79b4c8eb5252e910b7f64b9fcc0ed"
       - name: Verify key recovery and rotation with the candidate's age binaries
         run: |
           docker run --rm --pull=never --network none --read-only --user 0:0 \
@@ -77,13 +78,13 @@ jobs:
           echo "f32fdff28531e94cbfab0d0d98b147e4923cd5ac169011872f5709c6dbaede38  $RUNNER_TEMP/v181/docker-compose.yml" | sha256sum -c -
           sudo python3 deploy/publication/upgrade_smoke.py --from-yaml "$RUNNER_TEMP/v181/docker-compose.yml"
       - name: Verify all five OCI manifests and layer hashes
-        run: python3 deploy/publication/images.py verify "$RUNNER_TEMP/candidate" --commit "$GITHUB_SHA"
+        run: python3 deploy/publication/images.py verify "$RUNNER_TEMP/candidate" --commit "84fd541841c79b4c8eb5252e910b7f64b9fcc0ed"
       - name: Retain the tested images for approval
-        if: github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch
+        if: github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name == 'qa-artifact/v1.8.2.6'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: giftledger-candidate
           path: ${{ runner.temp }}/candidate/
-          retention-days: 14
+          retention-days: 3
           compression-level: 0
           if-no-files-found: error
