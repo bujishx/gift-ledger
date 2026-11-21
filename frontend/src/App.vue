@@ -82,6 +82,8 @@ const notice = ref("");
 const maintenanceAvailable = ref(false);
 const error = ref("");
 const authMode = ref("login");
+const registrationMode = ref(null);
+const inviteCode = ref("");
 const credentials = reactive({ username: "", password: "" });
 const profileForm = reactive({ name: "" });
 const profile = ref(null);
@@ -654,13 +656,31 @@ async function bootstrap() {
     if (account.value?.profile_completed) pageNavigation.init(statisticsKey);
   }
 }
+let registrationRequest = 0;
+async function refreshRegistration() {
+  if (account.value) return;
+  const sequence = ++registrationRequest;
+  try {
+    const {mode} = await api("/auth/registration");
+    if (sequence !== registrationRequest) return;
+    registrationMode.value = ["closed", "invite", "open"].includes(mode) ? mode : "unavailable";
+  } catch {
+    if (sequence !== registrationRequest) return;
+    registrationMode.value = "unavailable";
+  }
+  if (registrationMode.value !== "invite") inviteCode.value = "";
+  if (!["open", "invite"].includes(registrationMode.value)) authMode.value = "login";
+}
 async function authSubmit() {
   if (busy.value) return;
   busy.value = true;
   error.value = "";
   try {
     if (authMode.value === "register") {
-      await api("/auth/register", { method: "POST", body: credentials });
+      const body = {...credentials};
+      if (registrationMode.value === "invite") body.invite_code = inviteCode.value.trim();
+      await api("/auth/register", { method: "POST", body });
+      inviteCode.value = "";
       authMode.value = "login";
       success("注册成功，请登录并完善本人信息");
     } else {
@@ -681,6 +701,7 @@ async function authSubmit() {
     }
   } catch (err) {
     popupError(err);
+    if (err.code === "REGISTRATION_DISABLED" || err.code === "INVITE_INVALID") await refreshRegistration();
   } finally {
     busy.value = false;
   }
@@ -1995,8 +2016,8 @@ async function saveMyProfile() {
 watch(profile, (x) => {
   if (x) profileForm.name = x.name;
 });
-const authState = reactive({account,authMode,credentials,profileForm,busy,error,notice});
-const authActions = {authSubmit,saveProfile};
+const authState = reactive({account,authMode,registrationMode,inviteCode,credentials,profileForm,busy,error,notice});
+const authActions = {authSubmit,saveProfile,refreshRegistration};
 const meState = reactive({profileForm,meSection,busy,dictionaries,dictionaryCategory,dictionaryDraft,dictionaryRename,importFile,importPreview,importDecisions,importDecisionsDirty,importAcknowledged,importResult,importResultUncertain,importRecoveryUnavailable,importBatches,importBatchLoading,importBatchError,restoreFile,restorePreview,restorePassword,restoreAcknowledged,restoreRenames,safetyBackupToken,error,notice});
 const meActions = Object.fromEntries(Object.entries({saveMyProfile,exportAllData,downloadPersonalBackup,downloadSafetyBackup,previewOldLedger,confirmOldLedger,changeImportDecision,openImportIssue,queryImportResult,retryImportConfirmation,returnImportToPreview,refreshImportBatches,previewRestore,confirmRestore,createDictionaryItem,saveDictionaryRename,cancelDictionaryRename,setDictionaryActive,deleteDictionary,logout}).map(([name, action]) => [name, (...args) => {
   if (busy.value) return;

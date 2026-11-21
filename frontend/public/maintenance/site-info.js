@@ -1,4 +1,4 @@
-// Both About dialogs render the same projection. Each page supplies its own authorized endpoint.
+// Each dialog renders the projection returned by its authorized endpoint.
 export function displayVersion(value) {
   return /^[0-9]/.test(value) ? 'v' + value : (value || '未提供');
 }
@@ -34,7 +34,7 @@ export async function loadSiteAbout(container, {endpoint, token, signal} = {}) {
   image.src = '/brand-mark.png';
   image.alt = '';
   image.width = image.height = 48;
-  brand.append(image, element('strong', '往来有礼'), element('p', '记人情往来，守礼数分寸'));
+  brand.append(image, element('strong', '往来有礼'));
   const progress = element('p', '正在核对本站信息…', 'site-about-note');
   progress.setAttribute('role', 'status');
   container.replaceChildren(brand, progress);
@@ -45,6 +45,12 @@ export async function loadSiteAbout(container, {endpoint, token, signal} = {}) {
     const info = await response.json();
     if (signal?.aborted) return;
     const list = element('dl', '', 'site-about-rows');
+    row(list, '网站版本', displayVersion(info.version));
+    if (info.product === '往来有礼') {
+      container.replaceChildren(brand, list);
+      return;
+    }
+    brand.append(element('p', '记人情往来，守礼数分寸'));
     const details = element('details', '', 'site-about-details');
     details.append(element('summary', '查看完整标识'));
     const full = element('dl', '', 'site-about-rows');
@@ -75,7 +81,6 @@ export async function loadSiteAbout(container, {endpoint, token, signal} = {}) {
       });
       return button;
     }
-    row(list, '网站版本', displayVersion(info.version));
     row(list, '更新日期', info.updated_at);
     row(list, info.source_snapshot ? '基础 Git 提交' : 'Git 提交', shortValue(info.git_commit, 12, ' Git 提交号'));
     row(list, '本站项目', info.project);

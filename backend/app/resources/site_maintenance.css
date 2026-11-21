@@ -140,6 +140,17 @@ html[data-theme="dark"] :is(.key-badge.registered, .key-state.verified) { color:
 .owner-page .is-warning { color: #9a441e; }
 html[data-theme="dark"] .owner-page .is-warning { color: #ffb990; }
 #usage-cards { display: none; }
+.registration-grid { margin-bottom: 16px; }
+.registration-grid .form-stack { display: grid; gap: 12px; }
+.registration-grid .form-stack > button { justify-self: start; }
+.registration-grid output, #usage-feedback { display: block; color: var(--ui-muted); font-size: 14px; }
+#new-invitation { display: grid; gap: 8px; }
+#new-invitation button { justify-self: start; }
+#invitation-list { list-style: none; margin: 0; padding: 0; max-height: 18rem; overflow: auto; }
+#invitation-list li { display: flex; align-items: center; gap: 8px; justify-content: space-between; padding: 8px 0; border-top: 1px solid var(--ui-border); }
+#invitation-list small { display: block; color: var(--ui-muted); }
+.owner-user-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.owner-user-actions button, #invitation-list button { font-size: 13px; padding: 6px 10px; }
 .owner-table-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .owner-table-head input { max-width: 100%; }
 .owner-table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 12px 0; }

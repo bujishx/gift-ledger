@@ -296,6 +296,12 @@ class Tests(unittest.TestCase):
         )
         released = (a / "docker-compose.yml").read_text()
         self.assertIn('GIFTLEDGER_BUILD_VERSION: "1.5.0"', released)
+        label = next(line.strip().split(": ", 1)[1] for line in released.splitlines()
+                     if line.strip().startswith("io.giftledger.release-images:"))
+        self.assertEqual(json.loads(label.strip("'")), {
+            "version": "v1.5.0", "namespace": "example",
+            "digests": {role: ref.split("@")[1] for role, ref in self.refs.items()},
+        })
         self.assertNotIn("GIFT_LEDGER_APP_VERSION:", released)
         self.assertEqual((a / images.NETWORK_ASSET).read_bytes(), images.selected_file(images.NETWORK_SOURCE))
         for path in (a / "Install.zh.md", a / "Install.en.md"):

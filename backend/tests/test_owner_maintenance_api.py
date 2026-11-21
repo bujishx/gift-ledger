@@ -118,6 +118,8 @@ def site(monkeypatch, tmp_path):
             "CREATE TABLE gift_records (id INTEGER PRIMARY KEY, user_id INTEGER, amount NUMERIC)"
         )
         conn.exec_driver_sql("CREATE TABLE event_records(id INTEGER PRIMARY KEY, user_id INTEGER)")
+        for table in ("event_types", "kinship_types", "legacy_import_batches"):
+            conn.exec_driver_sql(f"CREATE TABLE {table}(id INTEGER PRIMARY KEY, user_id INTEGER)")
     try:
         yield Site(
             root,
@@ -396,6 +398,92 @@ def test_usage_cursor_covers_unique_accounts_without_loading_passwords_or_duplic
         second = c.get(BASE + "/usage/" + str(first["next_after"]), headers=owner).json()
     assert len(first["users"]) == 50 and len(second["users"]) == 7 and second["next_after"] is None
     assert len({row["username"] for row in first["users"] + second["users"]}) == 57
+
+
+def test_owner_can_suspend_restore_and_delete_only_the_confirmed_empty_account(site):
+    site.seed()
+    owner = headers(site.verified())
+    target = {"id": 1, "username": "ledger_user"}
+    with site.client() as c:
+        assert login(c, "ledger_user", site.old_password).status_code == 200
+        for path, body in (
+            ("accounts/delete-empty", target),
+            ("accounts/set-active", {**target, "is_active": False}),
+        ):
+            assert (
+                c.post(f"{BASE}/{path}", json=body, headers={"Origin": ORIGIN}).status_code == 401
+            )
+            assert (
+                c.post(
+                    f"{BASE}/{path}",
+                    json=body,
+                    headers=headers(owner["Authorization"][7:], SIBLING),
+                ).status_code
+                == 403
+            )
+        active = c.get(BASE + "/usage/active/0", headers=owner).json()
+        assert [(u["id"], u["can_delete"]) for u in active["users"]] == [(1, True), (2, True)]
+        assert (
+            c.post(
+                BASE + "/accounts/set-active", headers=owner, json={**target, "is_active": False}
+            ).status_code
+            == 200
+        )
+        assert c.get("/api/v1/auth/me").status_code == 401
+        assert login(c, "ledger_user", site.old_password).status_code == 401
+        inactive = c.get(BASE + "/usage/inactive/0", headers=owner).json()
+        assert [u["id"] for u in inactive["users"]] == [1, 3]
+        assert (
+            c.post(
+                BASE + "/accounts/set-active", headers=owner, json={**target, "is_active": True}
+            ).status_code
+            == 200
+        )
+        assert login(c, "ledger_user", site.old_password).status_code == 200
+        stale = {**target, "id": 2}  # A name may have been registered again since the list loaded.
+        assert c.post(BASE + "/accounts/delete-empty", json=stale, headers=owner).status_code == 404
+        assert (
+            c.post(BASE + "/accounts/delete-empty", json=target, headers=owner).status_code == 200
+        )
+        assert c.get("/api/v1/auth/me").status_code == 401
+        assert login(c, "ledger_user", site.old_password).status_code == 401
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "contacts",
+        "event_records",
+        "gift_records",
+        "relationship_types",
+        "kinship_types",
+        "event_types",
+        "legacy_import_batches",
+    ],
+)
+def test_owner_cannot_delete_if_a_business_record_was_added_after_confirmation(site, table):
+    site.seed()
+    owner = headers(site.verified())
+    target = {"id": 1, "username": "ledger_user"}
+    with site.client() as c:
+        state = c.get(BASE + "/usage/active/0", headers=owner).json()
+        assert state["users"][0]["can_delete"] is True
+        with site.db.begin() as db:
+            db.exec_driver_sql(f"INSERT INTO {table}(user_id) VALUES (1)")
+        response = c.post(BASE + "/accounts/delete-empty", json=target, headers=owner)
+        assert response.status_code == 409
+        assert "只能停用" in response.json()["detail"]
+        state = c.get(BASE + "/usage/active/0", headers=owner).json()
+        assert state["users"][0]["can_delete"] is False
+        assert state["users"][1]["can_delete"] is True
+        assert (
+            c.post(
+                BASE + "/accounts/set-active", headers=owner, json={**target, "is_active": False}
+            ).status_code
+            == 200
+        )
+        with site.db.connect() as db:
+            assert db.exec_driver_sql(f"SELECT count(*) FROM {table} WHERE user_id=1").scalar() == 1
 
 
 @pytest.mark.parametrize("user", ["ledger_user", "ledger_admin"])

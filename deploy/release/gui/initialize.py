@@ -537,6 +537,8 @@ def server_identity(root_engine, *, fresh):
             ).scalars()
         )
         expected = SYSTEM_SCHEMAS if fresh else SYSTEM_SCHEMAS | {DATABASE}
+        if not fresh and os.environ.get("GIFTLEDGER_INSTALL_KIND") == "single-yaml":
+            schemas.discard("gift_ledger_registration")
         require(
             schemas == expected,
             "database_namespace_not_fresh" if fresh else "database_namespace_changed",
@@ -637,6 +639,13 @@ def run_alembic(backend, operation, revision):
         command.upgrade(config, revision)
 
 
+def provision_registration(root_engine, legacy_open):
+    if os.environ.get("GIFTLEDGER_INSTALL_KIND") == "single-yaml":
+        from app.db.registration import provision
+
+        provision(root_engine, legacy_open)
+
+
 def run(
     project,
     *,
@@ -660,7 +669,7 @@ def run(
     check_directory(SOCKET.parent)
     sys.path.insert(0, str(backend))
     verifier = load_verifier(assets)
-    prepare_migration_environment(secrets, verifier, identity)
+    settings = prepare_migration_environment(secrets, verifier, identity)
     root_engine = socket_engine("root", secrets["mysql_root_password"])
     app_engine = socket_engine(APPLICATION_USER, secrets["mysql_app_password"], database=DATABASE)
     claimed = False
@@ -673,6 +682,7 @@ def run(
             # Business records and user dictionaries may now exist. Never rerun
             # zero-data initialization, migrations, ownership changes, or seeds.
             result = verify_database(app_engine, verifier, assets, REVISION, server_uuid)
+            provision_registration(root_engine, settings.registration_enabled)
             print(
                 json.dumps(
                     {
@@ -766,6 +776,8 @@ def run(
                 "verification": "full-schema-and-empty-business",
             },
         )
+        claimed = False
+        provision_registration(root_engine, settings.registration_enabled)
         print(
             json.dumps(
                 {

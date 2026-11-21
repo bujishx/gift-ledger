@@ -234,6 +234,9 @@ class Filesystem(unittest.TestCase):
         record=dict(project=args.project,instance=args.instance,origin=args.origin,station=args.station,
                     station_inode=install.host.identity(station.stat()), platform="ubuntu", image="sha256:"+"a"*64,
                     installer_sha256=hashlib.sha256(package.read_bytes()).hexdigest())
+        record["release_images"] = {"version": "v1.8.2.2", "namespace": "zhjido",
+                                    "digests": {role: "sha256:" + hashlib.sha256(role.encode()).hexdigest()
+                                                for role in install.host.RELEASE_SERVICES.values()}}
         archive=Mock()
         coordinator=archive.HostSite.return_value
         coordinator.coordinator={"image":record["image"]}
@@ -241,18 +244,22 @@ class Filesystem(unittest.TestCase):
         with patch.object(install,"discover",side_effect=lambda *args:dict(record)), \
                 patch.object(install.host,"archive_module",return_value=archive), \
                 patch.object(install.host,"ubuntu_docker",return_value="/usr/bin/docker"), \
+                patch.object(install.host,"refresh_release_tags") as refresh, \
                 patch.object(install,"units") as units,patch.object(install,"start") as start:
             with patch.object(install.owner,"store_binding",side_effect=RuntimeError("fixture interrupted")):
                 with self.assertRaisesRegex(RuntimeError,"fixture interrupted"):
                     install.install(root,args,package)
             units.assert_not_called()
-            identity=(root/"state/binding.json").read_bytes()
+            identity = json.loads((root/"state/binding.json").read_bytes())
             (station/".giftledger-maintenance/owner.sha256").unlink()
             with (root/"state/worker.lock").open("rb") as held:
                 install.fcntl.flock(held.fileno(),install.fcntl.LOCK_EX)
                 install.install(root,args,package)
                 install.install(root,args,package)
-            self.assertEqual((root/"state/binding.json").read_bytes(),identity)
+            expected = dict(identity, release_images=record["release_images"])
+            self.assertEqual(json.loads((root/"state/binding.json").read_bytes()), expected)
+            self.assertEqual(refresh.call_count, 2)
+            refresh.assert_called_with(root / "state", expected, record["image"])
             self.assertEqual(start.call_count,2)
             owner=(station/".giftledger-maintenance/owner-site.json")
             self.assertEqual(json.loads(owner.read_bytes()),dict(project=args.project,instance_id=args.instance,origin=args.origin))
@@ -260,7 +267,7 @@ class Filesystem(unittest.TestCase):
             record["instance"]=str(uuid4())
             with self.assertRaisesRegex(install.host.HostError,"existing_site_or_version_differs"):
                 install.install(root,args,package)
-            self.assertEqual((root/"state/binding.json").read_bytes(),identity)
+            self.assertEqual(json.loads((root/"state/binding.json").read_bytes()), expected)
 
     def test_same_site_upgrade_can_resume_partial_tool_replacement_with_owner_identity_intact(self):
         root = self.home/"fixture"; root.mkdir(mode=0o700)

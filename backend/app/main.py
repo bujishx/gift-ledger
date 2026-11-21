@@ -20,6 +20,7 @@ from app.api.routes.ledger_queries import router as ledger_queries_router
 from app.api.routes.maintenance_accounts import router as maintenance_accounts_router
 from app.api.routes.maintenance_enrollment import router as maintenance_enrollment_router
 from app.api.routes.maintenance_login import router as maintenance_login_router
+from app.api.routes.maintenance_registration import router as maintenance_registration_router
 from app.api.routes.maintenance_restore import router as maintenance_restore_router
 from app.api.routes.personal_restore import router as personal_restore_router
 from app.api.routes.profile import router as profile_router
@@ -28,6 +29,7 @@ from app.api.routes.statistics import router as statistics_router
 from app.core.config import Settings, get_settings
 from app.core.logging import RequestLoggingMiddleware, configure_logging
 from app.services.gift_change_auth import GiftChangeReauthStore
+from app.services.registration_limits import FailureLimiter
 from app.services.sensitive_actions import SensitiveActionStore
 
 
@@ -41,6 +43,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description="往来有礼人情往来管理系统后端接口。",
     )
     application.state.settings = app_settings
+    application.state.registration_limits = FailureLimiter()
     application.state.gift_change_reauth_store = GiftChangeReauthStore()
     application.state.sensitive_action_store = SensitiveActionStore()
     application.add_middleware(
@@ -68,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         private.include_router(site_about.owner)
         private.include_router(maintenance_login_router)
         private.include_router(maintenance_accounts_router)
+        private.include_router(maintenance_registration_router)
         private.include_router(maintenance_enrollment_router)
         private.include_router(maintenance_restore_router)
     private.include_router(personal_restore_router, prefix="/api/v1")

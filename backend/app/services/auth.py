@@ -22,7 +22,7 @@ class AuthenticationFailedError(ValueError):
     pass
 
 
-def create_user(
+def insert_user(
     session: Session,
     username: str,
     password: str,
@@ -34,25 +34,27 @@ def create_user(
     password_hash = hash_password(password)
 
     try:
-        with session.begin():
-            existing_id = session.scalar(
-                select(User.id).where(User.username == normalized_username)
-            )
-            if existing_id is not None:
-                raise UsernameAlreadyExistsError
+        existing_id = session.scalar(select(User.id).where(User.username == normalized_username))
+        if existing_id is not None:
+            raise UsernameAlreadyExistsError
 
-            user = User(
-                username=normalized_username,
-                password_hash=password_hash,
-                is_admin=int(is_admin),
-                is_active=1,
-            )
-            session.add(user)
-            session.flush()
+        user = User(
+            username=normalized_username,
+            password_hash=password_hash,
+            is_admin=int(is_admin),
+            is_active=1,
+        )
+        session.add(user)
+        session.flush()
     except IntegrityError as exc:
         raise UsernameAlreadyExistsError from exc
 
     return user
+
+
+def create_user(session: Session, username: str, password: str, *, is_admin: bool) -> User:
+    with session.begin():
+        return insert_user(session, username, password, is_admin=is_admin)
 
 
 def register_user(session: Session, username: str, password: str) -> User:

@@ -594,6 +594,8 @@ def database_guard(connection, context, *, revision=None, importer=None):
         "database_identity_or_transport_mismatch",
     )
     schemas = set(connection.exec_driver_sql("SHOW DATABASES").scalars())
+    if os.environ.get("GIFTLEDGER_INSTALL_KIND") == "single-yaml":
+        schemas.discard("gift_ledger_registration")
     require(
         schemas
         == {"information_schema", "mysql", "performance_schema", "sys", DATABASE},

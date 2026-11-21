@@ -19,7 +19,8 @@ def test_about_routes_are_separate_and_expose_only_this_targets_verified_data(tm
         monkeypatch.setenv(name, value)
     site_file = tmp_path / "site.json"
     monkeypatch.setattr(site_about, "SITE_FILE", site_file)
-    settings = Settings(trusted_origins=ORIGIN)
+    public_origin = "https://ledger.example:51888"
+    settings = Settings(trusted_origins=ORIGIN, reverse_proxy_origin=public_origin)
     assert settings.app_version == "1.5.0"  # Frozen schema and backup compatibility contract.
     app = create_app(settings)
     app.dependency_overrides[get_authentication_session] = lambda: object()
@@ -40,6 +41,9 @@ def test_about_routes_are_separate_and_expose_only_this_targets_verified_data(tm
     assert verified["version"] == "1.8.0-rc" and verified["updated_at"] == "2026-10-03"
     assert verified["restore_state"] == "verified" and verified["restored_at"].startswith("2026-10-01T12:00:00")
     assert "private" not in verified
+    public_response = TestClient(app, base_url=public_origin).get(business)
+    assert public_response.headers["cache-control"] == "no-store"
+    assert public_response.json() == {"product": "往来有礼", "version": "1.8.0-rc"}
     app.dependency_overrides.pop(get_current_user)
     app.dependency_overrides[require_owner] = lambda: object()
     assert client.get(business).status_code != 200

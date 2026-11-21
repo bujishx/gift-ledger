@@ -7,11 +7,12 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
 from app.api.dependencies import SettingsDependency, get_current_user
 from app.api.maintenance_access import require_owner
+from app.api.security import entry_origin
 
 business = APIRouter(prefix="/site", tags=["关于本站"], dependencies=[Depends(get_current_user)])
 owner = APIRouter(prefix="/api/v1/maintenance", tags=["站点维护"], dependencies=[Depends(require_owner)])
@@ -30,7 +31,23 @@ class About(BaseModel):
     restored_at: datetime | None = None
 
 
-@business.get("/about", response_model=About)
+class PublicAbout(BaseModel):
+    product: Literal["往来有礼"] = "往来有礼"
+    version: str
+
+
+def build_version() -> str:
+    return os.getenv("GIFTLEDGER_BUILD_VERSION") or "开发版"
+
+
+@business.get("/about", response_model=PublicAbout | About)
+def business_about(request: Request, settings: SettingsDependency, response: Response) -> PublicAbout | About:
+    if settings.site_origin and entry_origin(request) != settings.site_origin:
+        response.headers["Cache-Control"] = "no-store"
+        return PublicAbout(version=build_version())
+    return about(settings, response)
+
+
 @owner.get("/about", response_model=About)
 def about(settings: SettingsDependency, response: Response) -> About:
     response.headers["Cache-Control"] = "no-store"
@@ -40,7 +57,7 @@ def about(settings: SettingsDependency, response: Response) -> About:
         day = date.fromisoformat(os.getenv("GIFTLEDGER_BUILD_DATE", ""))
     except ValueError:
         day = None
-    info = About(version=os.getenv("GIFTLEDGER_BUILD_VERSION") or "开发版", updated_at=day,
+    info = About(version=build_version(), updated_at=day,
                  git_commit=commit if re.fullmatch("[0-9a-f]{40}", commit) else None,
                  source_snapshot=snapshot if re.fullmatch("[0-9a-f]{64}", snapshot) else None)
     try:

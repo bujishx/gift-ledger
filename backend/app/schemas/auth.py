@@ -8,6 +8,10 @@ class CredentialsRequest(BaseModel):
     password: str = Field(strict=True, min_length=1, max_length=128, description="密码")
 
 
+class RegistrationRequest(CredentialsRequest):
+    invite_code: str | None = Field(default=None, strict=True, max_length=128)
+
+
 class GiftChangeVerifyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

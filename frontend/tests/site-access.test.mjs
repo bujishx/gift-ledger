@@ -44,11 +44,12 @@ test('login, About and personal data render tools for the local entry only', asy
   for (const maintenanceAvailable of [false, true]) {
     const login = await render('/src/pages/AuthPage.vue', {
       maintenanceAvailable, actions: {}, state: {
-        account: null, authMode: 'login', credentials: {}, profileForm: {}, busy: false, error: '', notice: '',
+        account: null, authMode: 'login', registrationMode: 'closed', credentials: {}, profileForm: {}, busy: false, error: '', notice: '',
       },
     });
     const about = await render('/src/components/SiteAbout.vue', { maintenanceAvailable });
     assert.match(login, /欢迎回来/);
+    assert.doesNotMatch(login, /凭邀请码注册|立即注册/);
     assert.match(about, /关于往来有礼/);
     for (const html of [login, about]) assert.equal(html.includes('href="/maintenance"'), maintenanceAvailable);
     const state = { meSection: 'data', profileForm: {}, busy: false };
@@ -63,4 +64,15 @@ test('login, About and personal data render tools for the local entry only', asy
     assert.equal(restore.includes('恢复个人备份'), maintenanceAvailable);
     if (!maintenanceAvailable) assert.match(restore, /导出全部数据/);
   }
+  const authProps = {maintenanceAvailable: false, actions: {}, state: {
+    account:null, authMode:'login', registrationMode:'invite', inviteCode:'', credentials:{},
+    profileForm:{}, busy:false, error:'', notice:'',
+  }};
+  assert.match(await render('/src/pages/AuthPage.vue', authProps), /凭邀请码注册/);
+  authProps.state.authMode = 'register';
+  assert.match(await render('/src/pages/AuthPage.vue', authProps), /name="invite_code"/);
+  authProps.state.registrationMode = 'open';
+  assert.doesNotMatch(await render('/src/pages/AuthPage.vue', authProps), /name="invite_code"/);
+  authProps.state.authMode = 'login';
+  assert.match(await render('/src/pages/AuthPage.vue', authProps), /立即注册/);
 });

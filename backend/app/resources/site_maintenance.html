@@ -237,12 +237,43 @@
         </div>
       </div>
       <div id="owner-users" class="owner-panel" hidden>
-        <div class="owner-heading"><div><h1>注册用户</h1><p>查看本站业务账号的使用情况，协助找回登录名或重置密码。</p></div></div>
+        <div class="owner-heading"><div><h1>注册用户</h1></div></div>
+        <div class="owner-grid registration-grid">
+          <article>
+            <header class="owner-table-head"><h2>注册设置</h2><button type="button" class="outline" id="refresh-registration">刷新设置和记录</button></header>
+            <form id="registration-form" class="form-stack">
+              <label class="field"><span>公网注册</span>
+                <select id="public-registration" disabled>
+                  <option value="closed">关闭</option><option value="invite">仅限邀请</option><option value="open">开放注册</option>
+                </select>
+              </label>
+              <label class="account-confirm"><input type="checkbox" id="lan-registration" disabled>允许内网注册</label>
+              <p class="auth-field-help">已有账号可照常登录。公网注册关闭后，有效邀请码也不能用于公网注册。</p>
+              <button type="submit" class="primary" id="save-registration" disabled>保存设置</button>
+            </form>
+            <output id="registration-note" aria-live="polite"></output>
+          </article>
+          <article>
+            <h2>邀请码</h2>
+            <p class="auth-field-help">一个码只供一人注册，生成后 48 小时有效。</p>
+            <button type="button" id="create-invitation" class="outline" disabled>生成邀请码</button>
+            <div id="new-invitation" hidden>
+              <label class="field"><span>请复制并私发给受邀人</span><input id="invitation-code" type="text" readonly autocomplete="off" spellcheck="false"></label>
+              <button type="button" class="outline" id="copy-invitation">复制邀请码</button>
+            </div>
+            <ul id="invitation-list" aria-label="邀请码使用记录"></ul>
+            <output id="invitation-note" aria-live="polite"></output>
+          </article>
+        </div>
         <section class="card owner-user-card">
-          <div class="owner-table-head"><h2>业务账号</h2><label class="field"><span class="sr-only">搜索登录名或姓名</span><input type="search" id="usage-search" placeholder="搜索登录名或姓名"></label></div>
+          <div class="owner-table-head"><h2>业务账号</h2>
+            <label class="field"><span class="sr-only">账号状态</span><select id="usage-state"><option value="active">使用中</option><option value="inactive">已停用</option></select></label>
+            <label class="field"><span class="sr-only">搜索登录名或姓名</span><input type="search" id="usage-search" placeholder="搜索登录名或姓名"></label>
+          </div>
           <output id="users-note" aria-live="polite"></output>
-          <table class="owner-table"><thead><tr><th>登录名</th><th>本人姓名</th><th>联系人</th><th>事件</th><th>记账</th><th>最近登录</th></tr></thead><tbody id="usage-rows"></tbody></table>
+          <table class="owner-table"><thead><tr><th>登录名</th><th>本人姓名</th><th>联系人</th><th>事件</th><th>记账</th><th>最近登录</th><th>操作</th></tr></thead><tbody id="usage-rows"></tbody></table>
           <div id="usage-cards"></div><button class="outline" type="button" id="more-users" hidden>加载更多</button>
+          <output id="usage-feedback" aria-live="polite"></output>
         </section>
       <section id="account-help" hidden aria-labelledby="account-help-title">
         <h2 id="account-help-title">协助找回业务账号</h2>

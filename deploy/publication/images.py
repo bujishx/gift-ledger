@@ -388,11 +388,30 @@ def write_site_tools_zip(path, yaml_bytes, *, windows=False):
 
 
 def release_files(out, refs, repository, version):
-    out.mkdir(parents=True, exist_ok=False)
+    if not RELEASE_TAG.fullmatch(version) or set(refs) != set(ROLES):
+        raise ValueError("Expected a version and five digest-pinned release images")
+    digests = {}
+    namespaces = set()
+    for role in ROLES:
+        match = re.fullmatch(r"(?:docker\.io|127\.0\.0\.1:[0-9]{1,5})/([a-z0-9][a-z0-9_-]{1,29})/giftledger-" + role
+                             + r"@(sha256:[a-f0-9]{64})", refs[role])
+        if not match:
+            raise ValueError("Unexpected published image reference for " + role)
+        namespaces.add(match[1])
+        digests[role] = match[2]
+    if len(namespaces) != 1:
+        raise ValueError("Release images must belong to one Docker Hub publisher")
+    release = {"version": version, "namespace": namespaces.pop(), "digests": digests}
     yaml = f"# {version} · Linux/amd64\n" + render(refs).replace(
         "单文件安装候选版", "单文件安装", 1
     )
+    placeholder = 'io.giftledger.release-images: ""'
+    if yaml.count(placeholder) != 1:
+        raise ValueError("Expected one release image manifest on the prepare service")
+    metadata = json.dumps(release, sort_keys=True, separators=(",", ":"))
+    yaml = yaml.replace(placeholder, f"io.giftledger.release-images: '{metadata}'")
     yaml = yaml.replace('GIFTLEDGER_BUILD_VERSION: "开发版"', f'GIFTLEDGER_BUILD_VERSION: "{version.removeprefix("v")}"')
+    out.mkdir(parents=True, exist_ok=False)
     yaml_bytes = yaml.encode()
     (out / "docker-compose.yml").write_bytes(yaml_bytes)
     if has_network_guide():

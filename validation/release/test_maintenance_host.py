@@ -23,6 +23,109 @@ if os.name == "posix":
     spec.loader.exec_module(host)
 
 
+@unittest.skipUnless(os.name == "posix", "site maintenance uses POSIX file descriptors")
+class ReleaseImageTags(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name).resolve()
+        self.state = root / "fixture/state"
+        self.state.mkdir(parents=True)
+        self.station = root / "station"
+        self.station.mkdir()
+        self.version = "v1.8.2.2"
+        digests = {r: "sha256:" + hashlib.sha256(r.encode()).hexdigest() for r in host.RELEASE_SERVICES.values()}
+        self.release = dict(version=self.version, namespace="zhjido", digests=digests)
+        self.cfg = dict(project="fixture", station=str(self.station), station_inode=host.identity(self.station.stat()),
+                        release_images=self.release)
+        self.containers = []
+        self.images = {}
+        self.tags = {}
+        self.writes = []
+        self.configure("docker.io")
+
+    def configure(self, registry):
+        self.containers.clear()
+        self.images.clear()
+        for service, role in host.RELEASE_SERVICES.items():
+            image_id = "sha256:" + hashlib.sha256((role + "-config").encode()).hexdigest()
+            repo = "zhjido/giftledger-" + role
+            source = registry + "/" + repo + "@" + self.release["digests"][role]
+            key = source[len("docker.io/"):] if registry == "docker.io" else source
+            self.images[key] = dict(Id=image_id, RepoDigests=[source])
+            labels = {"com.docker.compose.project": "fixture", "com.docker.compose.service": service,
+                      "com.docker.compose.oneoff": "False"}
+            mounts = []
+            if service == "prepare":
+                self.key_image = image_id
+                labels[host.RELEASE_IMAGES_LABEL] = json.dumps(self.release)
+                mounts.append(dict(Source=str(self.station), Destination="/station", Type="bind"))
+            self.containers.append(dict(Name="/fixture-" + service + "-1", Image=image_id, Mounts=mounts,
+                Config=dict(Labels=labels, Image=source, Env=["GIFTLEDGER_BUILD_VERSION=1.8.2.2"])))
+
+    def docker(self, argv, **kwargs):
+        self.assertEqual(argv[1:3], ["--host", "unix:///var/run/docker.sock"])
+        command, args = argv[3:5], argv[5:]
+        if command == ["container", "inspect"]:
+            self.assertEqual(set(args), {row["Name"][1:] for row in self.containers})
+            return json.dumps(self.containers).encode()
+        if command == ["image", "inspect"]:
+            return json.dumps([self.images[ref] for ref in args]).encode()
+        if command == ["image", "ls"]:
+            return "".join(f"{ref} {image_id}\n" for ref, image_id in self.tags.items()).encode()
+        self.assertEqual(command, ["image", "tag"])
+        image_id, ref = args
+        self.writes.append(ref)
+        self.tags[ref] = image_id
+        return b""
+
+    def refresh(self):
+        with patch.object(host.subprocess, "check_output", side_effect=self.docker):
+            host.refresh_release_tags(self.state, self.cfg, self.key_image)
+        return json.loads((self.state / "image-tags.json").read_text())
+
+    def test_verified_digest_pull_tags_only_local_public_names_and_repairs_missing_tag(self):
+        for registry in ("docker.io", "127.0.0.1:50499"):
+            with self.subTest(registry=registry):
+                self.configure(registry)
+                self.tags = {"unrelated/app:latest": "sha256:" + "0"*64}
+                self.writes.clear()
+                self.assertEqual(self.refresh()["status"], "verified")
+                expected = {"zhjido/giftledger-" + role + ":" + self.version for role in host.RELEASE_SERVICES.values()}
+                self.assertEqual(set(self.writes), expected)
+                self.assertEqual(self.refresh()["status"], "verified")
+                self.assertEqual(len(self.writes), 5)
+                remove = "zhjido/giftledger-api:" + self.version
+                del self.tags[remove]
+                self.assertEqual(self.refresh()["status"], "verified")
+                self.assertEqual(self.writes[5:], [remove])
+                self.assertEqual(self.tags["unrelated/app:latest"], "sha256:" + "0"*64)
+
+    def test_foreign_binding_digest_mismatch_or_target_collision_never_overwrites_or_partially_tags(self):
+        conflict = "zhjido/giftledger-web:" + self.version
+        bad = "sha256:" + "f"*64
+        for corrupt, reason in (
+            (lambda: self.tags.update({conflict: bad}), "release_tag_conflict_web"),
+            (lambda: self.containers[-1]["Config"]["Labels"].update({"com.docker.compose.project": "other"}),
+             "release_site_container_mismatch"),
+            (lambda: self.containers[0]["Mounts"][0].update(Source="/other"), "release_prepare_binding_changed"),
+            (lambda: self.containers[-1].update(Image=bad), "release_digest_mismatch"),
+            (lambda: self.images[next(iter(self.images))].update(RepoDigests=[]), "release_digest_mismatch"),
+            (lambda: self.containers[-1]["Config"].update(Image="other/web:latest"), "release_source_mismatch"),
+            (lambda: self.containers[3]["Config"].update(Env=["GIFTLEDGER_BUILD_VERSION=1.8.1"]), "release_api_version_mismatch"),
+        ):
+            with self.subTest(reason=reason):
+                self.configure("docker.io")
+                self.tags.clear()
+                corrupt()
+                self.assertEqual(self.refresh(), dict(status="pending", reason=reason, version=self.version))
+                self.assertEqual(self.writes, [])
+        self.assertIsNone(host.release_metadata({}))
+        for version, namespace in (("latest", "zhjido"), (self.version, "someone-else")):
+            with self.assertRaises(host.HostError):
+                host.release_metadata({host.RELEASE_IMAGES_LABEL: json.dumps(dict(self.release, version=version, namespace=namespace))})
+
+
 @unittest.skipUnless(os.name == "posix", "DSM requires POSIX file descriptors")
 class Dispatch(unittest.TestCase):
     def setUp(self):

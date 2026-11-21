@@ -1,22 +1,32 @@
 # 往来有礼 · 单文件安装候选版 · Linux/amd64
 # 建站前先查看同一发行页的《安装前检查端口与网络》（Install-network.zh.txt）。
-# 新建站点时填写
 # 同一台主机再建独立站时，请另取项目名、另选空闲 HTTPS 端口、另建专用空文件夹。局域网 IP 可以相同。
-# 文件夹名可自取。例如在群晖 File Station 建 docker/gift-ledger-family，把本文件放进去。
+# 群晖用户可在 File Station 新建文件夹，例如 docker/gift-ledger-family，把本文件放进去。
 # 在 Container Manager → 项目 → 新增 中填写项目名、选择该文件夹，并使用已有 YAML。
-# 默认数据在该文件夹的 data/，备份在 backups/。升级已有站时沿用原项目名和数据目录。
+# 默认数据在该文件夹的 data/，备份在 backups/。升级已有站时，沿用原项目名和数据目录。
 
+# ★ 以下 4 项为站点设置，第 4 项可选。
+
+# 设置项 1　项目名
 # 群晖在“新增项目”中填写项目名即可，这里的默认值可保留。建议两处同名，方便以后在终端操作。
 # Ubuntu 直接运行 docker compose up -d 时会使用这里的名字，例如 gift-ledger-family。
 name: gift-ledger
+
+# 设置项 2　服务器的内网 IP 地址
 # 把 192.168.1.20 换成服务器实际的局域网 IPv4 地址，保留引号和变量写法。
 x-site-ip: &site-ip "${GIFTLEDGER_SITE_IP:-192.168.1.20}"
-# 把 8443 换成本站使用的空闲 HTTPS 端口。同一 IP 上的第二个站可用 8444（如空闲）。
+
+# 设置项 3　内网记账和维护使用的 HTTPS 端口
+# 如果 8443 空闲，可以保留。同一 IP 上再建一个站时，请选另一个空闲端口，例如 8444。
 x-site-port: &site-port "${GIFTLEDGER_HTTPS_PORT:-8443}"
-# 可选的外网记账入口。仅在内网使用时留空。需要时填写完整 HTTPS 来源，例如 https://ledger.example.com:51888。
-# 反向代理需将 Host 固定为此域名及外部端口，转发到上方的内网 HTTPS 地址。站点维护仍使用内网 IP。
+
+# 设置项 4　外网记账地址（可选）
+# 只在内网使用时，保留下一行的空值。需要外网记账时，在 :- 和 } 之间填入完整的 HTTPS 地址，
+# 例如 https://ledger.example.com:51888。反向代理发给上游的 Host 应固定为外部域名及端口，
+# 例如 ledger.example.com:51888，转发目标为上方设置的内网 HTTPS 地址。站点维护仍使用内网 IP。
 x-reverse-proxy-origin: &reverse-proxy-origin "${GIFTLEDGER_REVERSE_PROXY_ORIGIN:-}"
 
+# ★ 常规安装只需核对上方的站点设置。
 # 以下为程序配置，常规安装请保留原值
 # 站点资料在 data/ 中，以项目名和实例短号开头。备份、恢复与证书操作见“本站维护说明”，离线指南见 data/站主指南/。
 x-site: &site
@@ -31,7 +41,7 @@ x-app: &app
   GIFT_LEDGER_ENVIRONMENT: production
   GIFTLEDGER_BUILD_VERSION: "开发版"
   GIFT_LEDGER_LOG_LEVEL: INFO
-  GIFT_LEDGER_REGISTRATION_ENABLED: "true"
+  GIFT_LEDGER_REGISTRATION_ENABLED: "${GIFT_LEDGER_REGISTRATION_ENABLED:-true}"
   GIFT_LEDGER_AUTH_COOKIE_SECURE: "true"
   GIFT_LEDGER_IMPORT_TEMP_DIR: /var/lib/gift-ledger/imports
   GIFT_LEDGER_PERSONAL_RESTORE_TEMP_DIR: /var/lib/gift-ledger/personal-restores
@@ -66,6 +76,8 @@ services:
   prepare:
     <<: *installer
     image: giftledger-candidate/backup:1.5.0-stage5-r1
+    labels:
+      io.giftledger.release-images: ""
     environment:
       <<: *site
       GIFTLEDGER_PROJECT_DIR: "${GIFTLEDGER_PROJECT_DIR:-}"

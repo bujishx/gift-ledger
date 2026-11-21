@@ -36,6 +36,9 @@ HEX_ID = re.compile(r"[0-9a-f]{32}")
 SHA = re.compile(r"[0-9a-f]{64}")
 PROJECT = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
 IMAGE = re.compile(r"sha256:[0-9a-f]{64}")
+RELEASE_IMAGES_LABEL = "io.giftledger.release-images"
+RELEASE_SERVICES = {"prepare": "backup", "initialize": "installer", "db": "db", "api": "api", "web": "web"}
+RELEASE_VERSION = re.compile(r"v(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2,3}")
 
 
 class HostError(RuntimeError):
@@ -354,6 +357,100 @@ def ubuntu_docker():
     require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022
             and os.access(path, os.X_OK), "ubuntu_docker_not_trusted")
     return path
+
+
+def release_metadata(labels):
+    raw = labels.get(RELEASE_IMAGES_LABEL)
+    if raw in (None, ""):
+        return None  # Development Compose and older releases have no published digest inventory.
+    require(isinstance(raw, str) and len(raw) < 2048, "invalid_release_image_manifest")
+    manifest = json.loads(raw)
+    require(isinstance(manifest, dict) and set(manifest) == {"namespace", "version", "digests"}
+            and manifest["namespace"] == "zhjido" and isinstance(manifest["version"], str)
+            and len(manifest["version"]) <= 128 and RELEASE_VERSION.fullmatch(manifest["version"])
+            and isinstance(manifest["digests"], dict) and set(manifest["digests"]) == set(RELEASE_SERVICES.values())
+            and all(isinstance(v, str) and IMAGE.fullmatch(v) for v in manifest["digests"].values()),
+            "invalid_release_image_manifest")
+    return manifest
+
+
+def tag_release_images(cfg, key_image):
+    """Work entirely with local Docker objects. Validate the whole site before assigning any tag."""
+    release = cfg["release_images"]
+    project = cfg["project"]
+    names = {project + "-" + service + "-1": service for service in RELEASE_SERVICES}
+    binary = ("/var/packages/ContainerManager/target/usr/bin/docker"
+              if cfg.get("platform", "dsm") == "dsm" else str(ubuntu_docker()))
+
+    def docker(*args):
+        return subprocess.check_output([binary, "--host", "unix:///var/run/docker.sock", *args], timeout=10,
+                     stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     env={"PATH": "/usr/bin:/bin", "HOME": "/root", "LC_ALL": "C"})
+
+    def canonical(reference):
+        return reference[len("docker.io/"):] if reference.startswith("docker.io/") else reference
+
+    containers = json.loads(docker("container", "inspect", *names))
+    require({row["Name"] for row in containers} == {"/" + name for name in names}
+            and len(containers) == len(names), "release_site_container_mismatch")
+    plan = {}
+    sources = {}
+    for row in containers:
+        config = row["Config"]
+        labels = config["Labels"]
+        service = names[row["Name"][1:]]
+        require(labels.get("com.docker.compose.project") == project and labels.get("com.docker.compose.service") == service
+                and labels.get("com.docker.compose.oneoff") == "False", "release_site_container_mismatch")
+        if service == "prepare":
+            require(row["Image"] == key_image and release_metadata(labels) == release
+                    and [m.get("Source") for m in row["Mounts"] if m["Destination"] == "/station" and m["Type"] == "bind"]
+                    == [cfg["station"]], "release_prepare_binding_changed")
+        if service == "api":
+            require("GIFTLEDGER_BUILD_VERSION=" + release["version"][1:] in config["Env"], "release_api_version_mismatch")
+        role = RELEASE_SERVICES[service]
+        repository = "zhjido/giftledger-" + role
+        digest = release["digests"][role]
+        source = config["Image"]
+        # DSM/Compose normally keep the fully qualified Hub name; offline acceptance uses a loopback registry.
+        require(re.fullmatch(r"(?:(?:docker\.io|127\.0\.0\.1:[0-9]{1,5})/)?" + repository + "@" + digest, source)
+                and IMAGE.fullmatch(row["Image"]), "release_source_mismatch")
+        sources[canonical(source)] = row["Image"]
+        plan[repository + ":" + release["version"]] = row["Image"]
+    images = json.loads(docker("image", "inspect", *sources))
+    require(len(images) == len(sources), "release_digest_mismatch")
+    for (source, image_id), image in zip(sources.items(), images):
+        repo_digests = {canonical(ref) for ref in image.get("RepoDigests") or ()}
+        require(image["Id"] == image_id and source in repo_digests, "release_digest_mismatch")
+    installed = {}
+    for line in docker("image", "ls", "--no-trunc", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}").decode().splitlines():
+        reference, image_id = line.split()
+        reference = canonical(reference)
+        if reference in plan:
+            require(image_id == plan[reference], "release_tag_conflict_" + reference.split("giftledger-")[1].split(":")[0])
+            installed[reference] = image_id
+    for reference, image_id in plan.items():
+        if reference not in installed:
+            docker("image", "tag", image_id, reference)
+
+
+def refresh_release_tags(state, cfg, key_image):
+    if not cfg.get("release_images"):
+        return
+    report = {"version": cfg["release_images"]["version"]}
+    try:
+        with directories(Path(cfg["station"])) as station:
+            require(identity(os.fstat(station)) == cfg["station_inode"], "station_identity_changed")
+        # Every installed site on this engine uses the same root-controlled parent directory.
+        # Serialize the preflight and writes across concurrently starting site workers.
+        with directories(state.parent.parent) as base:
+            fcntl.flock(base, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            tag_release_images(cfg, key_image)
+        report["status"] = "verified"
+    except (HostError, OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+        report.update(status="pending", reason=machine_code(exc, "release_image_check_unavailable"))
+    evidence = state / "image-tags.json"
+    if not evidence.exists() or evidence.read_bytes() != encoded(report):
+        atomic_file(evidence, encoded(report), 0o600)
 
 
 def backup_binding(cfg, expected_station, key_image=None, engine_session=None, recover=False):
@@ -862,9 +959,12 @@ def serve(state, wait, once, expected_station=None, key_enrollment=False, key_im
                 require(str(restore.__file__).startswith(cfg["archive"] + "/"), "unexpected_restore_queue_module")
                 recovery = restore.current(host, state, handles, cfg)
             deadline = time.monotonic() + wait
-            next_sample = next_key_check = 0.0
+            next_sample = next_key_check = next_image_check = 0.0
             last_key_revision = None
             while (persistent or time.monotonic() < deadline) and not (stopping and stopping.is_set()):
+                if persistent and key_enrollment and time.monotonic() >= next_image_check:
+                    refresh_release_tags(state, cfg, key_image)
+                    next_image_check = time.monotonic() + 300
                 if persistent and key_enrollment and time.monotonic() >= next_key_check:
                     revision = key_state_revision(cfg)
                     if revision != last_key_revision:

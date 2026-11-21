@@ -1,14 +1,15 @@
 <script setup>
-import { computed, ref, toRefs, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, toRefs, watch } from 'vue';
 import './auth-page.css';
 
-/* 任务 C（U12）：登录 / 注册 / 首次本人建档三屏的视觉统一。
- * state 字段（account / authMode / credentials / profileForm / busy / error / notice）
- * 与 actions 名称（authSubmit / saveProfile）保持原样，认证机制、注册权限、
- * 账号隔离保持原样；确认密码与显示/隐藏状态只用于当前表单。 */
 const props = defineProps({ state: { type: Object, required: true }, actions: { type: Object, required: true }, maintenanceAvailable: Boolean });
 const { account, authMode, credentials, profileForm, busy, error, notice } = toRefs(props.state);
-const { authSubmit, saveProfile } = props.actions;
+const { authSubmit, saveProfile, refreshRegistration } = props.actions;
+onMounted(() => {
+  refreshRegistration();
+  window.addEventListener('focus', refreshRegistration);
+});
+onUnmounted(() => window.removeEventListener('focus', refreshRegistration));
 
 /* 页面内部辅助状态：提交期间禁止重复点击，不改动传入的业务状态。 */
 const submitting = ref(false);
@@ -59,6 +60,7 @@ async function submitAuth() {
 
 function switchMode() {
   authMode.value = isRegister.value ? 'login' : 'register';
+  props.state.inviteCode = '';
   error.value = '';
   notice.value = '';
 }
@@ -81,6 +83,12 @@ function switchMode() {
         </p>
       </header>
       <form class="form-stack" @submit.prevent="submitAuth">
+        <label v-if="isRegister && state.registrationMode === 'invite'" class="field">
+          <span class="field-label">邀请码<span class="auth-req" aria-hidden="true">*</span></span>
+          <input v-model="state.inviteCode" name="invite_code" type="text" autocomplete="off"
+            required autocapitalize="none" spellcheck="false" :disabled="pending" />
+          <small class="auth-field-help">粘贴站主发给您的一次性邀请码，有效期为 48 小时。</small>
+        </label>
         <div class="field"
           ><label class="field-label" for="auth-username"
             >{{ isRegister ? '用户名' : '登录名' }}<span class="auth-req" aria-hidden="true">*</span></label
@@ -146,10 +154,13 @@ function switchMode() {
           {{ authButtonLabel }}
         </button>
       </form>
-      <div class="auth-switch">
+      <div v-if="isRegister || ['open','invite'].includes(state.registrationMode)" class="auth-switch">
         <button class="text-button" type="button" :disabled="pending" @click="switchMode">
-          {{ isRegister ? "已有账号？返回登录" : "没有账号？立即注册" }}
+          {{ isRegister ? "已有账号？返回登录" : state.registrationMode === "invite" ? "凭邀请码注册" : "没有账号？立即注册" }}
         </button>
+      </div>
+      <div v-else-if="state.registrationMode === 'unavailable'" class="auth-switch">
+        <button class="text-button" type="button" :disabled="pending" @click="refreshRegistration">重新检查注册方式</button>
       </div>
       <div v-if="!isRegister && maintenanceAvailable" class="auth-switch">
         <a class="cross-site-link" href="/maintenance" target="_blank" rel="noopener" aria-label="站点维护（在新标签打开）" title="站点维护（在新标签打开）">

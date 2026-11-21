@@ -162,9 +162,13 @@ def discover(project, instance, origin, station, package):
                           station, binding, ip, port)
     with owner.directory(station) as fd:
         inode = host.identity(os.fstat(fd))
-    return {"project": project, "instance": instance, "origin": origin, "station": str(station),
+    record = {"project": project, "instance": instance, "origin": origin, "station": str(station),
             "station_inode": inode, "platform": kind, "image": prepare["Image"],
             "installer_sha256": hashlib.sha256(package).hexdigest()}
+    release = host.release_metadata(prepare["Config"]["Labels"])
+    if release is not None:
+        record["release_images"] = release
+    return record
 
 
 def read_record(root):
@@ -392,6 +396,14 @@ def install(root, args, package):
             owner_digest=secret_file.read_text().strip()))
     binding, _, _ = owner.binding(args.project, args.instance, args.origin)
     owner.store_binding(Path(record["station"]), binding, setup=True)
+    bound = host.read_config(state)
+    if bound.get("release_images") != record.get("release_images"):
+        if "release_images" in record:
+            bound["release_images"] = record["release_images"]
+        else:
+            bound.pop("release_images", None)
+        host.atomic_file(state / "binding.json", host.encoded(bound), 0o600)
+    host.refresh_release_tags(state, bound, record["image"])
     if record["platform"] == "ubuntu":
         units(root, record)
     return start(root, record)
@@ -541,6 +553,9 @@ def status(root, record):
         info["start_command"] = site_command(root, "start")
     info.update(project=record["project"], instance_id=record["instance"], origin=record["origin"],
                 worker_listening=active)
+    evidence = root / "state/image-tags.json"
+    if record.get("release_images") and evidence.exists():
+        info["image_tags"] = json.loads(evidence.read_bytes())
     return info
 
 

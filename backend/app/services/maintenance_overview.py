@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Contact, EventRecord, GiftRecord, RelationshipType, User
 from app.services.maintenance_sessions import OwnerSessions, SessionStoreError
 from app.services.system_dictionary_catalog import SELF_RELATIONSHIP_SYSTEM_CODE
+from app.services.user_management import has_business_data
 
 TABLES = {"users": User, "contacts": Contact, "events": EventRecord, "entries": GiftRecord}
 PAGE_SIZE = 50
@@ -181,15 +182,13 @@ def include_web_task(value: dict, root: Path, task: dict) -> None:
         return
 
 
-def usage(db: Session, owner: OwnerSessions, after: int):
-    page = list(
-        db.execute(
-            select(User.id, User.username, User.is_active)
-            .where(User.id > after)
-            .order_by(User.id)
-            .limit(PAGE_SIZE + 1)
+def usage(db: Session, owner: OwnerSessions, after: int, *, active: bool | None = None):
+    query = select(User.id, User.username, User.is_active).where(User.id > after)
+    if active is not None:
+        query = query.where(User.is_active == int(active)).add_columns(
+            (~has_business_data(User.id)).label("can_delete")
         )
-    )
+    page = list(db.execute(query.order_by(User.id).limit(PAGE_SIZE + 1)))
     cursor = page[PAGE_SIZE - 1].id if len(page) > PAGE_SIZE else None
     page = page[:PAGE_SIZE]
     ids = [row.id for row in page]
@@ -224,8 +223,10 @@ def usage(db: Session, owner: OwnerSessions, after: int):
     users = []
     for row in page:
         login = logins.get((row.id, row.username))
+        account = {"id": row.id, "can_delete": bool(row.can_delete)} if active is not None else {}
         users.append(
             {
+                **account,
                 "username": row.username,
                 "display_name": names.get(row.id),
                 "is_active": bool(row.is_active),

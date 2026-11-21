@@ -35,6 +35,10 @@ Choose **站点维护** (Site maintenance) below the registration link on the LA
 
 After signing in as the site owner, open the overview for service status, backup verification, certificate expiration and available space on the backup volume. Open Registered users for login names, profile names, usage counts and recent successful sign-ins. After verifying the account holder, use the same page to look up the login name or reset the business password.
 
+Under **Registered users** in LAN maintenance, control LAN registration independently and choose Closed, Invitation only, or Open for the public domain. A new site allows LAN registration and requires an invitation on the public domain. Each invitation expires after 48 hours, can be revoked, and is consumed only by a successful registration. Existing accounts can still sign in. Deactivating an account also ends access from signed-in devices, preserves its records and allows later reactivation. Only accounts with no profile or business data can be deleted. The public About dialog shows the product and version.
+
+The public Compose file pins all five images by SHA-256 digest. Once enabled or updated, the site's host maintenance service verifies the local images and adds the release version tag automatically. DSM displays the tag under Images.
+
 Maintenance actions includes key enrollment, key recovery and rotation, backup, download and restoration to an independent empty site. About this site shows the build and site instance and the last verified full-site restore when available. Compare its instance ID with the destination site's guide when reusing an address.
 
 ## Back up and restore in a browser

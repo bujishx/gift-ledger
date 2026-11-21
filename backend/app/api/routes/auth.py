@@ -1,4 +1,5 @@
 import logging
+from contextlib import contextmanager
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
@@ -16,7 +17,7 @@ from app.api.dependencies import (
 )
 from app.api.errors import ApiError, ErrorResponse
 from app.api.maintenance_access import owner_sessions
-from app.api.security import clear_auth_cookies, set_auth_cookies
+from app.api.security import clear_auth_cookies, entry_origin, set_auth_cookies
 from app.core.security import (
     PasswordPolicyError,
     SecurityConfigurationError,
@@ -30,6 +31,7 @@ from app.schemas.auth import (
     CredentialsRequest,
     GiftChangeVerifyRequest,
     MessageResponse,
+    RegistrationRequest,
 )
 from app.schemas.sensitive_actions import (
     SensitiveActionGrantResponse,
@@ -40,7 +42,7 @@ from app.services.auth import (
     UsernameAlreadyExistsError,
     authenticate_user,
     get_self_name,
-    register_user,
+    insert_user,
 )
 from app.services.import_preview_store import ImportPreviewStore, ImportPreviewStoreError
 from app.services.maintenance_sessions import SessionStoreError
@@ -48,6 +50,8 @@ from app.services.personal_safety_backup_store import (
     PersonalSafetyBackupStore,
     PersonalSafetyBackupStoreError,
 )
+from app.services.registration import InvalidInvitation, consume_invitation, read_policy
+from app.services.registration_limits import AttemptLimitReached
 from app.services.sensitive_actions import (
     SensitiveActionError,
     import_plan_context,
@@ -77,6 +81,47 @@ def _account_response(user: User, display_name: str | None) -> AccountResponse:
     )
 
 
+def registration_mode(request, session, settings, *, lock=False):
+    authority = entry_origin(request)
+    local = settings.site_origin
+    if local and authority not in {local, settings.reverse_proxy_origin}:
+        return "closed"
+    external = bool(settings.reverse_proxy_origin and authority == settings.reverse_proxy_origin)
+    if hasattr(request.app.state, "maintenance_owner_dir"):
+        policy = read_policy(session, lock=lock)
+        if external:
+            return policy["public_mode"]
+        return "open" if policy["lan_enabled"] else "closed"
+    # Legacy development deployments have no site-owner installer or admission schema.
+    if external:
+        return "closed"
+    return "open" if settings.registration_enabled else "closed"
+
+
+@contextmanager
+def limited_check(request: Request, kind: str, account: str, failure: type[Exception]):
+    peer = request.client.host if request.client else "unknown"
+    try:
+        with request.app.state.registration_limits.attempt(kind, peer, account, failure):
+            yield
+    except AttemptLimitReached as exc:
+        code = "LOGIN_RATE_LIMITED" if kind == "login" else "INVITE_RATE_LIMITED"
+        raise ApiError(
+            429, code, "验证尝试过多，请稍后再试", {"Retry-After": str(exc.retry_after)}
+        ) from exc
+
+
+@router.get("/registration", summary="查看当前入口的注册方式")
+def registration(
+    request: Request,
+    response: Response,
+    settings: SettingsDependency,
+    session: DatabaseSessionDependency,
+):
+    response.headers["Cache-Control"] = "no-store"
+    return {"mode": registration_mode(request, session, settings)}
+
+
 @router.post(
     "/register",
     response_model=AccountResponse,
@@ -85,19 +130,23 @@ def _account_response(user: User, display_name: str | None) -> AccountResponse:
     responses=ERROR_RESPONSES,
 )
 def register(
-    payload: CredentialsRequest,
+    payload: RegistrationRequest,
+    request: Request,
     settings: SettingsDependency,
     session: DatabaseSessionDependency,
     _trusted_origin: TrustedOriginDependency,
 ) -> AccountResponse:
-    if not settings.registration_enabled:
-        raise ApiError(
-            status.HTTP_403_FORBIDDEN,
-            "REGISTRATION_DISABLED",
-            "当前暂未开放新用户注册",
-        )
     try:
-        user = register_user(session, payload.username, payload.password)
+        with session.begin():
+            mode = registration_mode(request, session, settings, lock=True)
+            if mode == "closed":
+                raise ApiError(403, "REGISTRATION_DISABLED", "当前入口暂未开放新用户注册")
+            if mode == "invite":
+                with limited_check(request, "invite", "", InvalidInvitation):
+                    consume_invitation(session, payload.invite_code)
+            user = insert_user(session, payload.username, payload.password, is_admin=False)
+    except InvalidInvitation as exc:
+        raise ApiError(403, "INVITE_INVALID", "邀请码无效或已失效，请向站主索取。") from exc
     except UsernamePolicyError as exc:
         raise ApiError(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -134,7 +183,10 @@ def login(
     _trusted_origin: TrustedOriginDependency,
 ) -> AccountResponse:
     try:
-        user = authenticate_user(session, payload.username, payload.password)
+        with limited_check(
+            request, "login", payload.username.strip().lower(), AuthenticationFailedError
+        ):
+            user = authenticate_user(session, payload.username, payload.password)
         access_token = create_access_token(user.id, settings.jwt_secret, user.password_hash)
     except AuthenticationFailedError as exc:
         raise ApiError(
